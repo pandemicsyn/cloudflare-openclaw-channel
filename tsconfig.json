@@ -12,13 +12,7 @@
 		/* Specify what module code is generated. */
 		"module": "es2022",
 		/* Specify how TypeScript looks up a file from a given module specifier. */
-		"moduleResolution": "node",
-		"baseUrl": ".",
-		"paths": {
-			"openclaw/plugin-sdk/gateway-runtime": [
-				"packages/openclaw-channel/node_modules/openclaw/dist/plugin-sdk/gateway-runtime.d.ts"
-			]
-		},
+		"moduleResolution": "bundler",
 		/* Enable importing .json files */
 		"resolveJsonModule": true,
 

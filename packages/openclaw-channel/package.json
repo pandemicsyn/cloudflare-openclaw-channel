@@ -33,7 +33,7 @@
 		}
 	},
 	"peerDependencies": {
-		"openclaw": "*"
+		"openclaw": ">=2026.3.27"
 	},
 	"dependencies": {
 		"@pandemicsyn/cf-do-channel-contract": "workspace:*"
