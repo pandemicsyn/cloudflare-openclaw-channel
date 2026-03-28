@@ -1,0 +1,11 @@
+# Local Wrangler secrets for `npx wrangler dev`
+# Copy to `.dev.vars` and replace placeholder values.
+
+# Required for OpenClaw -> Worker provider auth.
+CHANNEL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+
+# Required for client JWT minting and verification.
+CHANNEL_JWT_SECRET=replace-with-a-long-random-jwt-secret
+
+# Legacy fallback only. Prefer JWT-based client auth instead.
+# CHANNEL_PUBLIC_TOKEN=replace-with-a-long-random-public-token

@@ -1,0 +1,41 @@
+{
+	"name": "@pandemicsyn/openclaw-cf-do-channel",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "OpenClaw channel plugin scaffold for a Cloudflare Worker and Durable Objects transport",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./setup-entry": {
+			"types": "./dist/setup-entry.d.ts",
+			"import": "./dist/setup-entry.js"
+		}
+	},
+	"files": [
+		"dist",
+		"openclaw.plugin.json"
+	],
+	"scripts": {
+		"build": "tsup"
+	},
+	"openclaw": {
+		"extensions": [
+			"./dist/index.js"
+		],
+		"setupEntry": "./dist/setup-entry.js",
+		"channel": {
+			"id": "cf-do-channel",
+			"label": "Cloudflare Durable Object Channel",
+			"blurb": "Bridge OpenClaw to a Cloudflare Worker-backed persistent chat surface."
+		}
+	},
+	"peerDependencies": {
+		"openclaw": "*"
+	},
+	"dependencies": {
+		"@pandemicsyn/cf-do-channel-contract": "workspace:*"
+	}
+}

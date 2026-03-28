@@ -1,0 +1,22 @@
+{
+	"name": "@pandemicsyn/cf-do-channel-client",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Headless client SDK for the Cloudflare Durable Object OpenClaw channel",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsup"
+	},
+	"dependencies": {
+		"@pandemicsyn/cf-do-channel-contract": "workspace:*"
+	}
+}

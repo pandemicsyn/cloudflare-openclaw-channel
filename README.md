@@ -1,0 +1,211 @@
+# Cloudflare OpenClaw Channel
+
+Cloudflare OpenClaw Channel is a native OpenClaw channel backed by Cloudflare Workers and Durable Objects.
+
+It is organized around three deliverables:
+
+- a Worker + Durable Object transport
+- a native OpenClaw channel plugin
+- a headless client SDK for custom apps and demo UIs
+
+The intended shape is SDK-first. Any basic chat UI should be a thin demo on top of the client package, not the primary integration surface.
+
+## Overview
+
+The system works like this:
+
+1. A client authenticates and connects to the Worker bridge.
+2. The Worker verifies the client identity and binds the socket to a conversation room in a Durable Object.
+3. OpenClaw opens a persistent provider WebSocket into that same bridge.
+4. Client messages are forwarded into OpenClaw through the native channel plugin.
+5. The plugin enforces pairing, routing, sessions, and approvals.
+6. Replies, approval payloads, and typed status events are streamed back to clients through the bridge.
+
+Important packages:
+
+- [packages/channel-contract](./packages/channel-contract)
+  Shared wire protocol and route helpers.
+- [packages/channel-client](./packages/channel-client)
+  Headless client SDK for browser or app integrations.
+- [packages/openclaw-channel](./packages/openclaw-channel)
+  Native OpenClaw channel plugin package.
+
+Architecture details live in [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Hello World
+
+This is the simplest way to use the client SDK from your own app:
+
+```ts
+import { createChannelClient } from "@pandemicsyn/cf-do-channel-client";
+
+const client = createChannelClient({
+  baseUrl: "https://your-worker.example.workers.dev",
+  conversationId: "demo-room",
+  auth: {
+    kind: "credentials",
+    clientId: "web-alice",
+    clientSecret: "replace-me",
+  },
+});
+
+client.on("message", ({ message }) => {
+  console.log(message.role, message.text, message.ui);
+});
+
+client.on("status", (event) => {
+  console.log(event.status.kind, event.status.message);
+});
+
+await client.connect();
+await client.sendMessage("hello");
+```
+
+If the channel emits an approval payload, your app can submit the decision with:
+
+```ts
+await client.resolveApproval({
+  approvalId: "plugin:123",
+  decision: "allow-once",
+});
+```
+
+## Deployment
+
+### 1. Configure Worker secrets
+
+For local development with Wrangler:
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+For deployed environments, set these secrets and vars:
+
+- `CHANNEL_SERVICE_TOKEN`
+  Required for the OpenClaw provider connection and protected status routes.
+- `CHANNEL_JWT_SECRET`
+  Required for client JWT issuance and verification.
+- `CHANNEL_USERS_JSON`
+  Optional static user registry keyed by JWT `sub`.
+- `CHANNEL_CLIENT_CREDENTIALS_JSON`
+  Optional static credential registry for `POST /v1/auth/token`.
+- `CHANNEL_ID`
+  Optional channel id override. Default is `cf-do-channel`.
+
+Example static registries:
+
+```json
+{
+  "user_123": { "name": "Alice", "enabled": true }
+}
+```
+
+```json
+{
+  "web-alice": {
+    "secret": "replace-me",
+    "sub": "user_123",
+    "name": "Alice",
+    "enabled": true
+  }
+}
+```
+
+### 2. Generate Worker types
+
+```bash
+npm run cf-typegen
+```
+
+Run this again after changing bindings in [wrangler.jsonc](./wrangler.jsonc).
+
+### 3. Run locally
+
+```bash
+npm run dev
+```
+
+### 4. Deploy to Cloudflare
+
+```bash
+npm run deploy
+```
+
+### 5. Configure the OpenClaw plugin
+
+Suggested OpenClaw config:
+
+```json5
+{
+  channels: {
+    "cf-do-channel": {
+      baseUrl: "https://your-worker.example.workers.dev",
+      serviceToken: "secret",
+      dmPolicy: "pairing",
+      allowFrom: [],
+      approvalAllowFrom: ["user_123"]
+    }
+  }
+}
+```
+
+## Bridge API
+
+Endpoints:
+
+- `GET /health`
+- `GET /v1/bridge/status`
+- `POST /v1/auth/token`
+- `GET /v1/bridge/ws?role=provider|client&accountId=default&conversationId=...`
+- `POST /v1/conversations/:conversationId/messages`
+
+Client WebSocket auth:
+
+- preferred: JWT via `?token=...` or `Authorization: Bearer ...`
+- fallback: shared `CHANNEL_PUBLIC_TOKEN` only when `CHANNEL_JWT_SECRET` is unset
+
+Provider WebSocket auth:
+
+- `CHANNEL_SERVICE_TOKEN` via `?token=...` or `Authorization: Bearer ...`
+
+Protected bridge status probe:
+
+- `GET /v1/bridge/status?accountId=default`
+- requires `CHANNEL_SERVICE_TOKEN`
+- returns provider state, room counts, and auth config summary
+
+## Package Development
+
+This repo is now wired as a pnpm workspace.
+
+Useful commands:
+
+```bash
+npm run typecheck
+pnpm build
+pnpm test
+```
+
+`pnpm build` builds the publishable package artifacts under `dist/` for workspace packages.
+
+## CI
+
+GitHub Actions CI is defined in [\.github/workflows/ci.yml](./.github/workflows/ci.yml).
+
+It runs:
+
+- install
+- typecheck
+- package builds
+- tests
+
+At the moment, the repo is set up for package build and test validation in CI. The remaining gap is release automation, not basic build/test correctness.
+
+GitHub releases are defined in [\.github/workflows/release.yml](./.github/workflows/release.yml).
+
+Release behavior:
+
+- pushing a tag like `v0.1.0` builds and tests the repo, then creates a GitHub release
+- the release attaches package tarballs for `channel-contract`, `channel-client`, and `openclaw-channel`
+- npm publishing is not part of this workflow

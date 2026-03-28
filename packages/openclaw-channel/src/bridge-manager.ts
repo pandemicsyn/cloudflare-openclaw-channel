@@ -1,0 +1,573 @@
+import {
+	DEFAULT_ACCOUNT_ID,
+	buildBridgeWebSocketPath,
+	buildConversationMessagesPath,
+	createMessageId,
+	type ChannelMessage,
+	type ChannelStatusKind,
+	type ChannelUi,
+	type ProviderActionEvent,
+	type ProviderEvent,
+	type ProviderInboundEvent,
+	type ProviderMessageEvent,
+	type ProviderStatusEvent,
+} from "../../channel-contract/src/index.js";
+import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
+import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/direct-dm";
+import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/direct-dm";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { ApprovalGatewayClient } from "./approval-client.js";
+import { recordSenderBinding } from "./binding-store.js";
+
+type ResolvedAccount = {
+	accountId: string | null;
+	baseUrl: string;
+	serviceToken: string;
+	defaultTo?: string;
+	dmPolicy?: string;
+	allowFrom: string[];
+	approvalAllowFrom: string[];
+};
+
+type GatewayContext = {
+	cfg: OpenClawConfig;
+	account: ResolvedAccount;
+	abortSignal: AbortSignal;
+	log?: {
+		info?: (message: string) => void;
+		warn?: (message: string) => void;
+		error?: (message: string) => void;
+		debug?: (message: string) => void;
+	};
+	setStatus?: (next: Record<string, unknown>) => void;
+	channelRuntime?: any;
+};
+
+const activeManagers = new Map<string, BridgeConnectionManager>();
+
+function managerKey(accountId?: string | null): string {
+	return accountId ?? DEFAULT_ACCOUNT_ID;
+}
+
+function normalizeBaseWsUrl(baseUrl: string): URL {
+	const url = new URL(baseUrl);
+	url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+	return url;
+}
+
+function isAllowedSender(candidate: string, allowFrom: string[]): boolean {
+	return allowFrom.includes("*") || allowFrom.includes(candidate);
+}
+
+function buildPairingUi(params: { senderId: string; code?: string }): ChannelUi {
+	return {
+		kind: "approval",
+		title: "Pairing Required",
+		body: params.code
+			? `An operator must approve this chat before messages can run. Pairing code: ${params.code}`
+			: `An operator must approve this chat before messages can run. Your channel id is ${params.senderId}.`,
+		approvalId: params.code ?? params.senderId,
+		approvalKind: "pairing",
+	};
+}
+
+async function postFallbackMessage(
+	account: ResolvedAccount,
+	conversationId: string,
+	message: ChannelMessage,
+): Promise<void> {
+	const url = new URL(buildConversationMessagesPath(conversationId), account.baseUrl).toString();
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${account.serviceToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			messageId: message.id,
+			role: message.role,
+			text: message.text,
+			participantId: message.participantId,
+			metadata: message.metadata,
+			ui: message.ui,
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(`bridge fallback failed (${response.status}): ${await response.text()}`);
+	}
+}
+
+export class BridgeConnectionManager {
+	private socket: WebSocket | null = null;
+	private connected = false;
+	private stopped = false;
+	private reconnectDelayMs = 1_000;
+	private approvalClient: ApprovalGatewayClient | null = null;
+
+	constructor(private readonly ctx: GatewayContext) {}
+
+	get isConnected(): boolean {
+		return this.connected;
+	}
+
+	async run(): Promise<void> {
+		while (!this.stopped && !this.ctx.abortSignal.aborted) {
+			try {
+				await this.connectOnce();
+				this.reconnectDelayMs = 1_000;
+				await this.waitForSocketClose();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.ctx.log?.warn?.(
+					`[${managerKey(this.ctx.account.accountId)}] bridge connection failed: ${message}`,
+				);
+				this.ctx.setStatus?.({
+					accountId: this.ctx.account.accountId,
+					connected: false,
+					connecting: false,
+					lastError: message,
+				});
+			}
+			if (this.stopped || this.ctx.abortSignal.aborted) {
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, this.reconnectDelayMs));
+			this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 15_000);
+		}
+		this.close();
+	}
+
+	close(): void {
+		this.stopped = true;
+		this.connected = false;
+		if (this.socket) {
+			try {
+				this.socket.close(1000, "shutdown");
+			} catch {}
+		}
+		this.socket = null;
+		void this.approvalClient?.close();
+		this.approvalClient = null;
+	}
+
+	async sendProviderMessage(params: {
+		conversationId: string;
+		text: string;
+		participantId?: string;
+		metadata?: Record<string, unknown>;
+		role?: "assistant" | "system";
+		messageId?: string;
+		ui?: ChannelUi;
+	}): Promise<void> {
+		const message: ChannelMessage = {
+			id: params.messageId ?? createMessageId("provider"),
+			role: params.role ?? "assistant",
+			text: params.text,
+			timestamp: new Date().toISOString(),
+			participantId: params.participantId,
+			metadata: params.metadata,
+			ui: params.ui,
+		};
+
+		if (this.socket && this.connected) {
+			await this.sendProviderEvent({
+				type: "provider.message",
+				conversationId: params.conversationId,
+				message,
+			} satisfies ProviderMessageEvent);
+			return;
+		}
+
+		await postFallbackMessage(this.ctx.account, params.conversationId, message);
+	}
+
+	async sendProviderStatus(params: {
+		conversationId: string;
+		kind: ChannelStatusKind;
+		message?: string;
+		referenceId?: string;
+		approvalId?: string;
+		approvalKind?: "exec" | "plugin" | "pairing";
+		details?: Record<string, unknown>;
+	}): Promise<void> {
+		if (!this.socket || !this.connected) {
+			return;
+		}
+		await this.sendProviderEvent({
+			type: "provider.status",
+			conversationId: params.conversationId,
+			status: {
+				kind: params.kind,
+				message: params.message,
+				referenceId: params.referenceId,
+				approvalId: params.approvalId,
+				approvalKind: params.approvalKind,
+				details: params.details,
+			},
+		} satisfies ProviderStatusEvent);
+	}
+
+	private async sendProviderEvent(event: ProviderEvent): Promise<void> {
+		if (!this.socket || !this.connected) {
+			throw new Error("provider websocket is not connected");
+		}
+		this.socket.send(JSON.stringify(event));
+	}
+
+	private async connectOnce(): Promise<void> {
+		if (!this.ctx.channelRuntime) {
+			throw new Error("channelRuntime is required for native provider transport");
+		}
+		const baseUrl = normalizeBaseWsUrl(this.ctx.account.baseUrl);
+		const wsUrl = new URL(
+			buildBridgeWebSocketPath({
+				accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+				role: "provider",
+				token: this.ctx.account.serviceToken,
+			}),
+			baseUrl,
+		);
+		const socket = new WebSocket(wsUrl.toString());
+		this.socket = socket;
+
+		await new Promise<void>((resolve, reject) => {
+			const fail = () => reject(new Error("provider websocket failed before open"));
+			socket.addEventListener("open", () => resolve(), { once: true });
+			socket.addEventListener("error", fail, { once: true });
+			this.ctx.abortSignal.addEventListener(
+				"abort",
+				() => {
+					this.close();
+					reject(new Error("aborted"));
+				},
+				{ once: true },
+			);
+		});
+
+		this.connected = true;
+		this.ctx.log?.info?.(
+			`[${managerKey(this.ctx.account.accountId)}] connected to bridge ${wsUrl.origin}`,
+		);
+		this.ctx.setStatus?.({
+			accountId: this.ctx.account.accountId,
+			connected: true,
+			connecting: false,
+			lastConnectedAt: Date.now(),
+			lastError: null,
+		});
+
+		socket.send(
+			JSON.stringify({
+				type: "provider.hello",
+				accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+			}),
+		);
+
+		socket.addEventListener("message", (event) => {
+			void this.handleSocketMessage(event.data).catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.ctx.log?.error?.(
+					`[${managerKey(this.ctx.account.accountId)}] inbound handling failed: ${message}`,
+				);
+			});
+		});
+		socket.addEventListener("close", () => {
+			this.connected = false;
+			this.ctx.setStatus?.({
+				accountId: this.ctx.account.accountId,
+				connected: false,
+				connecting: false,
+				lastDisconnectAt: Date.now(),
+			});
+		});
+	}
+
+	private waitForSocketClose(): Promise<void> {
+		return new Promise((resolve) => {
+			if (!this.socket) {
+				resolve();
+				return;
+			}
+			this.socket.addEventListener("close", () => resolve(), { once: true });
+			this.ctx.abortSignal.addEventListener(
+				"abort",
+				() => {
+					this.close();
+					resolve();
+				},
+				{ once: true },
+			);
+		});
+	}
+
+	private async handleSocketMessage(raw: unknown): Promise<void> {
+		const payload = typeof raw === "string" ? raw : String(raw);
+		const envelope = JSON.parse(payload) as
+			| ProviderInboundEvent
+			| ProviderActionEvent
+			| { type: string; error?: string };
+		if (envelope.type === "provider.inbound") {
+			await this.handleInboundMessage(envelope as ProviderInboundEvent);
+			return;
+		}
+		if (envelope.type === "provider.action") {
+			await this.handleAction(envelope as ProviderActionEvent);
+			return;
+		}
+		if ("error" in envelope && envelope.error) {
+			throw new Error(envelope.error);
+		}
+	}
+
+	private async handleAction(envelope: ProviderActionEvent): Promise<void> {
+		if (envelope.action.type !== "approval.resolve") {
+			return;
+		}
+		if (!isAllowedSender(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
+			await this.sendProviderStatus({
+				conversationId: envelope.conversationId,
+				kind: "approval_resolved",
+				approvalId: envelope.action.approvalId,
+				message: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
+				details: { ok: false, reason: "not-allowed" },
+			});
+			return;
+		}
+		this.approvalClient ??= new ApprovalGatewayClient({
+			cfg: this.ctx.cfg,
+			log: this.ctx.log,
+		});
+		await this.sendProviderStatus({
+			conversationId: envelope.conversationId,
+			kind: "working",
+			referenceId: envelope.actionId,
+			approvalId: envelope.action.approvalId,
+			message: "Submitting approval decision to OpenClaw.",
+		});
+		try {
+			await this.approvalClient.resolveApproval({
+				id: envelope.action.approvalId,
+				decision: envelope.action.decision,
+			});
+			await this.sendProviderStatus({
+				conversationId: envelope.conversationId,
+				kind: "approval_resolved",
+				referenceId: envelope.actionId,
+				approvalId: envelope.action.approvalId,
+				message: `Approval submitted: ${envelope.action.decision}.`,
+				details: { ok: true, decision: envelope.action.decision },
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await this.sendProviderStatus({
+				conversationId: envelope.conversationId,
+				kind: "approval_resolved",
+				referenceId: envelope.actionId,
+				approvalId: envelope.action.approvalId,
+				message: `Approval submit failed: ${message}`,
+				details: { ok: false, error: message },
+			});
+		}
+	}
+
+	private async handleInboundMessage(inbound: ProviderInboundEvent): Promise<void> {
+		const conversationId = inbound.conversationId;
+		const text = inbound.event.text?.trim();
+		if (!text) {
+			return;
+		}
+		const senderId = inbound.senderId?.trim() || conversationId;
+		await recordSenderBinding({
+			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+			senderId,
+			conversationId,
+		});
+		await this.sendProviderStatus({
+			conversationId,
+			kind: "working",
+			referenceId: inbound.event.messageId,
+			message: "Checking channel access and pairing state.",
+		});
+		const pairing = createChannelPairingController({
+			core: {
+				channel: this.ctx.channelRuntime,
+			},
+			channel: "cf-do-channel",
+			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+		});
+		const resolvedAccess = await resolveInboundDirectDmAccessWithRuntime({
+			cfg: this.ctx.cfg,
+			channel: "cf-do-channel",
+			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+			dmPolicy: this.ctx.account.dmPolicy ?? "pairing",
+			allowFrom: this.ctx.account.allowFrom,
+			senderId,
+			rawBody: text,
+			isSenderAllowed: (candidate: string, allowFrom: string[]) =>
+				isAllowedSender(candidate, allowFrom),
+			runtime: {
+				shouldComputeCommandAuthorized:
+					this.ctx.channelRuntime.commands.shouldComputeCommandAuthorized,
+				resolveCommandAuthorizedFromAuthorizers:
+					this.ctx.channelRuntime.commands.resolveCommandAuthorizedFromAuthorizers,
+			},
+			readStoreAllowFrom: async () => await pairing.readAllowFromStore(),
+		});
+		if (resolvedAccess.access.decision === "pairing") {
+			let pairingReplyText = "";
+			await pairing.issueChallenge({
+				senderId,
+				senderIdLine: `Your channel id: ${senderId}`,
+				meta: {
+					conversationId,
+				},
+				sendPairingReply: async (challengeText: string) => {
+					pairingReplyText = challengeText;
+					await this.sendProviderStatus({
+						conversationId,
+						kind: "approval_required",
+						approvalId: senderId,
+						approvalKind: "pairing",
+						message: "Pairing approval is required before this chat can continue.",
+					});
+					await this.sendProviderMessage({
+						conversationId,
+						text: challengeText,
+						participantId: senderId,
+						role: "system",
+						ui: buildPairingUi({ senderId }),
+					});
+				},
+				onCreated: () => {
+					this.ctx.log?.debug?.(
+						`[${managerKey(this.ctx.account.accountId)}] pairing request sender=${senderId}`,
+					);
+				},
+				onReplyError: (error: unknown) => {
+					const message = error instanceof Error ? error.message : String(error);
+					this.ctx.log?.warn?.(
+						`[${managerKey(this.ctx.account.accountId)}] pairing reply failed for ${senderId}: ${message}`,
+					);
+				},
+			});
+			if (!pairingReplyText) {
+				await this.sendProviderStatus({
+					conversationId,
+					kind: "approval_required",
+					approvalId: senderId,
+					approvalKind: "pairing",
+					message: "Pairing approval is required before this chat can continue.",
+				});
+			}
+			return;
+		}
+		if (resolvedAccess.access.decision !== "allow") {
+			this.ctx.log?.warn?.(
+				`[${managerKey(this.ctx.account.accountId)}] blocked sender ${senderId} (${resolvedAccess.access.reason})`,
+			);
+			await this.sendProviderStatus({
+				conversationId,
+				kind: "final",
+				referenceId: inbound.event.messageId,
+				message: `Message blocked: ${resolvedAccess.access.reason ?? "not allowed"}.`,
+				details: { ok: false, reason: resolvedAccess.access.reason },
+			});
+			return;
+		}
+
+		await this.sendProviderStatus({
+			conversationId,
+			kind: "typing",
+			referenceId: inbound.event.messageId,
+			message: "OpenClaw is thinking.",
+		});
+		await dispatchInboundDirectDmWithRuntime({
+			cfg: this.ctx.cfg,
+			runtime: {
+				channel: this.ctx.channelRuntime,
+			},
+			channel: "cf-do-channel",
+			channelLabel: "Cloudflare OpenClaw Channel",
+			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+			peer: {
+				kind: "direct",
+				id: conversationId,
+			},
+			senderId,
+			senderAddress: `cf-do:${senderId}`,
+			recipientAddress: `cf-do:${conversationId}`,
+			conversationLabel: conversationId,
+			rawBody: text,
+			messageId: inbound.event.messageId?.trim() || createMessageId("inbound"),
+			timestamp: Date.now(),
+			commandAuthorized: resolvedAccess.commandAuthorized,
+			deliver: async (reply: {
+				text?: string;
+				mediaUrl?: string;
+				mediaUrls?: string[];
+			}) => {
+				const parts = [reply.text?.trim(), reply.mediaUrl, ...(reply.mediaUrls ?? [])].filter(
+					(value): value is string => Boolean(value?.trim()),
+				);
+				if (parts.length === 0) {
+					return;
+				}
+				await this.sendProviderStatus({
+					conversationId,
+					kind: "working",
+					referenceId: inbound.event.messageId,
+					message: "Delivering reply.",
+				});
+				await this.sendProviderMessage({
+					conversationId,
+					text: parts.join("\n\n"),
+					participantId: senderId,
+					metadata: inbound.senderName ? { userName: inbound.senderName } : undefined,
+				});
+			},
+			onRecordError: (error: unknown) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.ctx.log?.error?.(
+					`[${managerKey(this.ctx.account.accountId)}] record inbound failed: ${message}`,
+				);
+			},
+			onDispatchError: (error: unknown, info: { kind: string }) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.ctx.log?.error?.(
+					`[${managerKey(this.ctx.account.accountId)}] dispatch ${info.kind} failed: ${message}`,
+				);
+			},
+		});
+		await this.sendProviderStatus({
+			conversationId,
+			kind: "final",
+			referenceId: inbound.event.messageId,
+			message: "Reply complete.",
+			details: { ok: true },
+		});
+	}
+}
+
+export function registerBridgeManager(ctx: GatewayContext): BridgeConnectionManager {
+	const key = managerKey(ctx.account.accountId);
+	const existing = activeManagers.get(key);
+	if (existing) {
+		existing.close();
+	}
+	const manager = new BridgeConnectionManager(ctx);
+	activeManagers.set(key, manager);
+	return manager;
+}
+
+export function getBridgeManager(accountId?: string | null): BridgeConnectionManager | undefined {
+	return activeManagers.get(managerKey(accountId));
+}
+
+export function clearBridgeManager(accountId?: string | null): void {
+	const key = managerKey(accountId);
+	const existing = activeManagers.get(key);
+	if (existing) {
+		existing.close();
+		activeManagers.delete(key);
+	}
+}
