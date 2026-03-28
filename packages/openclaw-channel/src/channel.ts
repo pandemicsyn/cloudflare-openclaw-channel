@@ -1,13 +1,7 @@
 import {
-	createChannelPluginBase,
 	createChatChannelPlugin,
 	type OpenClawConfig,
 } from "openclaw/plugin-sdk/core";
-import {
-	buildExecApprovalPendingReplyPayload,
-	buildPluginApprovalRequestMessage,
-	buildPluginApprovalResolvedMessage,
-} from "openclaw/plugin-sdk/approval-runtime";
 
 import {
 	buildConversationMessagesPath,
@@ -113,6 +107,57 @@ function buildApprovalButtons(
 	return buttons;
 }
 
+function summarizeValue(value: unknown): string | undefined {
+	if (typeof value === "string") {
+		return value.trim() || undefined;
+	}
+	if (Array.isArray(value)) {
+		const joined = value
+			.map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+			.filter(Boolean)
+			.join(" ");
+		return joined || undefined;
+	}
+	return undefined;
+}
+
+function buildExecApprovalPendingText(request: Record<string, unknown>): string {
+	const command =
+		summarizeValue(request.commandDisplay) ??
+		summarizeValue(request.command) ??
+		summarizeValue(request.argv);
+	const reason = summarizeValue(request.reason);
+	if (command && reason) {
+		return `Exec approval required for ${command}. ${reason}`;
+	}
+	if (command) {
+		return `Exec approval required for ${command}.`;
+	}
+	if (reason) {
+		return `Exec approval required. ${reason}`;
+	}
+	return "Exec approval required.";
+}
+
+function buildPluginApprovalPendingText(request: Record<string, unknown>): string {
+	const title =
+		summarizeValue(request.title) ??
+		summarizeValue(request.plugin) ??
+		summarizeValue(request.name) ??
+		summarizeValue(request.kind);
+	const reason = summarizeValue(request.reason) ?? summarizeValue(request.summary);
+	if (title && reason) {
+		return `Plugin approval required for ${title}. ${reason}`;
+	}
+	if (title) {
+		return `Plugin approval required for ${title}.`;
+	}
+	if (reason) {
+		return `Plugin approval required. ${reason}`;
+	}
+	return "Plugin approval required.";
+}
+
 function buildApprovalUi(params: {
 	title: string;
 	body: string;
@@ -170,6 +215,7 @@ async function sendOutboundMessage(account: ResolvedAccount, to: string, request
 	}
 	const payload = (await response.json()) as { message?: { id?: string } };
 	return {
+		channel: DEFAULT_CHANNEL_ID,
 		messageId: payload.message?.id ?? request.messageId ?? `plugin_${Date.now()}`,
 	};
 }
@@ -187,14 +233,42 @@ function buildExecApprovalResolvedText(resolved: {
 	return resolved.resolvedBy ? `Approval resolved: ${action} by ${resolved.resolvedBy}.` : `Approval resolved: ${action}.`;
 }
 
+function buildPluginApprovalResolvedText(resolved: {
+	decision?: string;
+	resolvedBy?: string;
+}): string {
+	const action =
+		resolved.decision === "allow-once"
+			? "Allowed once"
+			: resolved.decision === "allow-always"
+				? "Always allowed"
+				: resolved.decision === "deny"
+					? "Denied"
+					: "Resolved";
+	return resolved.resolvedBy ? `Plugin approval resolved: ${action} by ${resolved.resolvedBy}.` : `Plugin approval resolved: ${action}.`;
+}
+
 export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount>({
-	base: createChannelPluginBase({
+	base: {
 		id: DEFAULT_CHANNEL_ID,
 		meta: {
+			id: DEFAULT_CHANNEL_ID,
 			label: "Cloudflare Durable Object Channel",
+			selectionLabel: "Cloudflare Durable Object Channel",
+			docsPath: "/channels/cloudflare-openclaw-channel",
+			docsLabel: "cloudflare-openclaw-channel",
 			blurb: "Bridge OpenClaw through a Cloudflare Worker-backed persistent channel.",
 		},
+		capabilities: {
+			chatTypes: ["direct"],
+			media: true,
+			blockStreaming: true,
+		},
 		setup: {
+			applyAccountConfig: ({ cfg }: { cfg: OpenClawConfig }) => cfg,
+		},
+		config: {
+			listAccountIds: () => [DEFAULT_ACCOUNT_ID],
 			resolveAccount,
 			inspectAccount(cfg: OpenClawConfig) {
 				const section = resolveSection(cfg) ?? {};
@@ -205,8 +279,119 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 					),
 				};
 			},
+			isConfigured: (account: ResolvedAccount) => Boolean(account.baseUrl && account.serviceToken),
 		},
-	}),
+		messaging: {
+			normalizeTarget: (target: string) => target.trim() || undefined,
+			targetResolver: {
+				looksLikeId: (id: string) => Boolean(id?.trim()),
+				hint: "<conversation-id>",
+			},
+		},
+		execApprovals: {
+			getInitiatingSurfaceState: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
+				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
+				return account.approvalAllowFrom.length > 0 ? { kind: "enabled" } : { kind: "disabled" };
+			},
+			shouldSuppressLocalPrompt: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
+				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
+				return account.approvalAllowFrom.length > 0;
+			},
+			hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) => {
+				const section = resolveSection(cfg);
+				if (!readString(section, "baseUrl") || !readString(section, "serviceToken")) {
+					return false;
+				}
+				return readStringList(section, "approvalAllowFrom").length > 0;
+			},
+			buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
+				void nowMs;
+				const text = buildExecApprovalPendingText(request);
+				return {
+					text,
+					channelData: {
+						execApproval: {
+							approvalId: request.id,
+							approvalSlug: request.id.slice(0, 8),
+							allowedDecisions: ["allow-once", "allow-always", "deny"],
+						},
+						cfDoChannel: {
+							ui: buildApprovalUi({
+								title: "Exec Approval Required",
+								body: text,
+								approvalId: request.id,
+								approvalKind: "exec",
+							}),
+						},
+					},
+				};
+			},
+			buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
+				text: buildExecApprovalResolvedText(resolved),
+				channelData: {
+					execApproval: {
+						approvalId: resolved.id,
+						approvalSlug: String(resolved.id ?? "").slice(0, 8),
+						allowedDecisions: [],
+					},
+					cfDoChannel: {
+						ui: {
+							kind: "notice",
+							title: "Approval Resolved",
+							body: buildExecApprovalResolvedText(resolved),
+							badge: resolved.decision,
+						},
+					},
+				},
+			}),
+		},
+		status: {
+			buildAccountSnapshot: ({ account }: { account: ResolvedAccount }) => ({
+				accountId: account.accountId ?? DEFAULT_ACCOUNT_ID,
+				enabled: true,
+				configured: Boolean(account.baseUrl && account.serviceToken),
+				extra: {
+					baseUrl: account.baseUrl,
+					approvalAllowFrom: account.approvalAllowFrom,
+				},
+			}),
+			probeAccount: async ({ account }: { account: ResolvedAccount }) => {
+				const url = new URL("/v1/bridge/status", account.baseUrl);
+				url.searchParams.set("accountId", account.accountId ?? DEFAULT_ACCOUNT_ID);
+				const response = await fetch(url.toString(), {
+					headers: {
+						authorization: `Bearer ${account.serviceToken}`,
+					},
+				});
+				const body = await response.json().catch(() => null);
+				return {
+					ok: response.ok,
+					status: response.status,
+					body,
+				};
+			},
+		},
+		gateway: {
+			startAccount: async (ctx) => {
+				const manager = registerBridgeManager({
+					cfg: ctx.cfg,
+					account: ctx.account,
+					abortSignal: ctx.abortSignal,
+					log: ctx.log,
+					setStatus: (next) =>
+						ctx.setStatus({
+							accountId: ctx.accountId,
+							...next,
+						}),
+					channelRuntime: ctx.channelRuntime,
+				});
+				await manager.run();
+			},
+			stopAccount: async (ctx: { accountId: string }) => {
+				clearBridgeManager(ctx.accountId);
+			},
+		},
+	},
 	security: {
 		dm: {
 			channelKey: DEFAULT_CHANNEL_ID,
@@ -274,103 +459,6 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 	},
 	threading: {
 		topLevelReplyToMode: "reply",
-	},
-	messaging: {
-		normalizeTarget: (target: string) => target.trim() || undefined,
-		targetResolver: {
-			looksLikeId: (id: string) => Boolean(id?.trim()),
-			hint: "<conversation-id>",
-		},
-	},
-	execApprovals: {
-		getInitiatingSurfaceState: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
-			const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-			return account.approvalAllowFrom.length > 0 ? { kind: "enabled" } : { kind: "disabled" };
-		},
-		shouldSuppressLocalPrompt: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
-			const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-			return account.approvalAllowFrom.length > 0;
-		},
-		hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) =>
-			resolveAccount(cfg, DEFAULT_ACCOUNT_ID).approvalAllowFrom.length > 0,
-		buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
-			const payload = buildExecApprovalPendingReplyPayload({
-				request,
-				nowMs,
-			}) as { text?: string };
-			return {
-				text: payload.text ?? "Exec approval required.",
-				channelData: {
-					execApproval: {
-						approvalId: request.id,
-						approvalSlug: request.id.slice(0, 8),
-						allowedDecisions: ["allow-once", "allow-always", "deny"],
-					},
-					cfDoChannel: {
-						ui: buildApprovalUi({
-							title: "Exec Approval Required",
-							body: payload.text ?? "A tool action needs approval.",
-							approvalId: request.id,
-							approvalKind: "exec",
-						}),
-					},
-				},
-			};
-		},
-		buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
-			text: buildExecApprovalResolvedText(resolved),
-			channelData: {
-				execApproval: {
-					approvalId: resolved.id,
-					approvalSlug: String(resolved.id ?? "").slice(0, 8),
-					allowedDecisions: [],
-				},
-				cfDoChannel: {
-					ui: {
-						kind: "notice",
-						title: "Approval Resolved",
-						body: buildExecApprovalResolvedText(resolved),
-						badge: resolved.decision,
-					},
-				},
-			},
-		}),
-		buildPluginPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => ({
-			text: buildPluginApprovalRequestMessage(request, nowMs),
-			channelData: {
-				execApproval: {
-					approvalId: request.id,
-					approvalSlug: request.id.slice(0, 8),
-					allowedDecisions: ["allow-once", "allow-always", "deny"],
-				},
-				cfDoChannel: {
-					ui: buildApprovalUi({
-						title: "Plugin Approval Required",
-						body: buildPluginApprovalRequestMessage(request, nowMs),
-						approvalId: request.id,
-						approvalKind: "plugin",
-					}),
-				},
-			},
-		}),
-		buildPluginResolvedPayload: ({ resolved }: { resolved: any }) => ({
-			text: buildPluginApprovalResolvedMessage(resolved),
-			channelData: {
-				execApproval: {
-					approvalId: resolved.id,
-					approvalSlug: String(resolved.id ?? "").slice(0, 8),
-					allowedDecisions: [],
-				},
-				cfDoChannel: {
-					ui: {
-						kind: "notice",
-						title: "Plugin Approval Resolved",
-						body: buildPluginApprovalResolvedMessage(resolved),
-						badge: resolved.decision,
-					},
-				},
-			},
-		}),
 	},
 	outbound: {
 		base: {
@@ -448,38 +536,16 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						ui,
 						metadata: payload.channelData,
 					});
-					return { messageId: `provider_${Date.now()}` };
+					return {
+						channel: DEFAULT_CHANNEL_ID,
+						messageId: `provider_${Date.now()}`,
+					};
 				}
 				return await sendOutboundMessage(account, to, {
 					role: "assistant",
 					text,
 					metadata: payload.channelData,
 					ui,
-				});
-			},
-			sendMedia: async (params: {
-				cfg: OpenClawConfig;
-				to: string;
-				text: string;
-				accountId?: string | null;
-				mediaUrl?: string;
-			}) => {
-				const account = resolveAccount(params.cfg, params.accountId);
-				const text = params.mediaUrl ? `${params.text}\n\n${params.mediaUrl}`.trim() : params.text;
-				const manager = getBridgeManager(account.accountId);
-				if (manager) {
-					await manager.sendProviderMessage({
-						conversationId: params.to,
-						text,
-						role: "assistant",
-						metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,
-					});
-					return { messageId: `provider_${Date.now()}` };
-				}
-				return await sendOutboundMessage(account, params.to, {
-					role: "assistant",
-					text,
-					metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,
 				});
 			},
 		},
@@ -504,68 +570,48 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						kind: "final",
 						message: "Reply complete.",
 					});
-					return { messageId: `provider_${Date.now()}` };
+					return {
+						messageId: `provider_${Date.now()}`,
+					};
 				}
-				return await sendOutboundMessage(account, params.to, {
+				const result = await sendOutboundMessage(account, params.to, {
 					role: "assistant",
 					text: params.text,
 				});
+				return {
+					messageId: result.messageId,
+				};
 			},
-		},
-	},
-	status: {
-		buildAccountSnapshot: ({ account }: { account: ResolvedAccount }) => ({
-			accountId: account.accountId,
-			enabled: true,
-			configured: Boolean(account.baseUrl && account.serviceToken),
-			extra: {
-				baseUrl: account.baseUrl,
-				approvalAllowFrom: account.approvalAllowFrom,
+			sendMedia: async (params: {
+				cfg: OpenClawConfig;
+				to: string;
+				text: string;
+				accountId?: string | null;
+				mediaUrl?: string;
+			}) => {
+				const account = resolveAccount(params.cfg, params.accountId);
+				const text = params.mediaUrl ? `${params.text}\n\n${params.mediaUrl}`.trim() : params.text;
+				const manager = getBridgeManager(account.accountId);
+				if (manager) {
+					await manager.sendProviderMessage({
+						conversationId: params.to,
+						text,
+						role: "assistant",
+						metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,
+					});
+					return {
+						messageId: `provider_${Date.now()}`,
+					};
+				}
+				const result = await sendOutboundMessage(account, params.to, {
+					role: "assistant",
+					text,
+					metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,
+				});
+				return {
+					messageId: result.messageId,
+				};
 			},
-		}),
-		probeAccount: async ({ account }: { account: ResolvedAccount }) => {
-			const url = new URL("/v1/bridge/status", account.baseUrl);
-			url.searchParams.set("accountId", account.accountId ?? DEFAULT_ACCOUNT_ID);
-			const response = await fetch(url.toString(), {
-				headers: {
-					authorization: `Bearer ${account.serviceToken}`,
-				},
-			});
-			const body = await response.json().catch(() => null);
-			return {
-				ok: response.ok,
-				status: response.status,
-				body,
-			};
-		},
-	},
-	gateway: {
-		startAccount: async (ctx: {
-			cfg: OpenClawConfig;
-			accountId: string;
-			account: ResolvedAccount;
-			abortSignal: AbortSignal;
-			log?: {
-				info?: (message: string) => void;
-				warn?: (message: string) => void;
-				error?: (message: string) => void;
-				debug?: (message: string) => void;
-			};
-			setStatus: (next: Record<string, unknown>) => void;
-			channelRuntime?: unknown;
-		}) => {
-			const manager = registerBridgeManager({
-				cfg: ctx.cfg,
-				account: ctx.account,
-				abortSignal: ctx.abortSignal,
-				log: ctx.log,
-				setStatus: ctx.setStatus,
-				channelRuntime: ctx.channelRuntime,
-			});
-			await manager.run();
-		},
-		stopAccount: async (ctx: { accountId: string }) => {
-			clearBridgeManager(ctx.accountId);
 		},
 	},
 });

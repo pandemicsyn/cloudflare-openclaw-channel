@@ -78,7 +78,7 @@ importers:
         specifier: workspace:*
         version: link:../channel-contract
       openclaw:
-        specifier: '*'
+        specifier: '>=2026.3.24'
         version: 2026.3.24(@napi-rs/canvas@0.1.97)
 
 packages:

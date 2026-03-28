@@ -1,5 +1,6 @@
 import {
 	DEFAULT_ACCOUNT_ID,
+	DEFAULT_CHANNEL_ID,
 	buildBridgeWebSocketPath,
 	buildConversationMessagesPath,
 	createMessageId,
@@ -12,9 +13,9 @@ import {
 	type ProviderMessageEvent,
 	type ProviderStatusEvent,
 } from "../../channel-contract/src/index.js";
-import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/direct-dm";
-import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/direct-dm";
+import { createChannelPairingChallengeIssuer } from "openclaw/plugin-sdk/channel-pairing";
+import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { ApprovalGatewayClient } from "./approval-client.js";
 import { recordSenderBinding } from "./binding-store.js";
@@ -388,17 +389,26 @@ export class BridgeConnectionManager {
 			referenceId: inbound.event.messageId,
 			message: "Checking channel access and pairing state.",
 		});
-		const pairing = createChannelPairingController({
-			core: {
-				channel: this.ctx.channelRuntime,
-			},
-			channel: "cf-do-channel",
-			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+		const resolvedAccountId = this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID;
+		const readAllowFromStore = () =>
+			this.ctx.channelRuntime!.pairing.readAllowFromStore({
+				channel: DEFAULT_CHANNEL_ID,
+				accountId: resolvedAccountId,
+			});
+		const issuePairingChallenge = createChannelPairingChallengeIssuer({
+			channel: DEFAULT_CHANNEL_ID,
+			upsertPairingRequest: (input: { id: string; meta?: Record<string, string | undefined> }) =>
+				this.ctx.channelRuntime!.pairing.upsertPairingRequest({
+					channel: DEFAULT_CHANNEL_ID,
+					id: input.id,
+					accountId: resolvedAccountId,
+					meta: input.meta,
+				}),
 		});
 		const resolvedAccess = await resolveInboundDirectDmAccessWithRuntime({
 			cfg: this.ctx.cfg,
-			channel: "cf-do-channel",
-			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
+			channel: DEFAULT_CHANNEL_ID,
+			accountId: resolvedAccountId,
 			dmPolicy: this.ctx.account.dmPolicy ?? "pairing",
 			allowFrom: this.ctx.account.allowFrom,
 			senderId,
@@ -411,11 +421,11 @@ export class BridgeConnectionManager {
 				resolveCommandAuthorizedFromAuthorizers:
 					this.ctx.channelRuntime.commands.resolveCommandAuthorizedFromAuthorizers,
 			},
-			readStoreAllowFrom: async () => await pairing.readAllowFromStore(),
+			readStoreAllowFrom: async () => await readAllowFromStore(),
 		});
 		if (resolvedAccess.access.decision === "pairing") {
 			let pairingReplyText = "";
-			await pairing.issueChallenge({
+			await issuePairingChallenge({
 				senderId,
 				senderIdLine: `Your channel id: ${senderId}`,
 				meta: {
@@ -486,7 +496,7 @@ export class BridgeConnectionManager {
 			runtime: {
 				channel: this.ctx.channelRuntime,
 			},
-			channel: "cf-do-channel",
+			channel: DEFAULT_CHANNEL_ID,
 			channelLabel: "Cloudflare OpenClaw Channel",
 			accountId: this.ctx.account.accountId ?? DEFAULT_ACCOUNT_ID,
 			peer: {
