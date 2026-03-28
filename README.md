@@ -72,17 +72,36 @@ await client.resolveApproval({
 });
 ```
 
-## Deployment
+## Install
 
-### 1. Configure Worker secrets
+This follows the normal OpenClaw channel shape:
+
+1. deploy the external channel transport
+2. install the OpenClaw plugin
+3. add `channels.cf-do-channel` config
+4. start OpenClaw
+
+The only non-standard part is that this channel depends on a Cloudflare Worker + Durable Object bridge.
+
+### 1. Build the repo
+
+```bash
+pnpm install
+npm run typecheck
+pnpm build
+```
+
+### 2. Configure and deploy the Worker
 
 For local development with Wrangler:
 
 ```bash
 cp .dev.vars.example .dev.vars
+npm run cf-typegen
+npm run dev
 ```
 
-For deployed environments, set these secrets and vars:
+For deployed environments, set these Worker secrets and vars:
 
 - `CHANNEL_SERVICE_TOKEN`
   Required for the OpenClaw provider connection and protected status routes.
@@ -114,27 +133,28 @@ Example static registries:
 }
 ```
 
-### 2. Generate Worker types
+For production deploy:
 
 ```bash
 npm run cf-typegen
-```
-
-Run this again after changing bindings in [wrangler.jsonc](./wrangler.jsonc).
-
-### 3. Run locally
-
-```bash
-npm run dev
-```
-
-### 4. Deploy to Cloudflare
-
-```bash
 npm run deploy
 ```
 
-### 5. Configure the OpenClaw plugin
+Run `npm run cf-typegen` again after changing bindings in [wrangler.jsonc](./wrangler.jsonc).
+
+### 3. Install the OpenClaw plugin
+
+Build artifacts for the plugin are written under [packages/openclaw-channel/dist](./packages/openclaw-channel/dist).
+
+The plugin package is [packages/openclaw-channel](./packages/openclaw-channel) and includes:
+
+- `dist/index.js`
+- `dist/setup-entry.js`
+- `openclaw.plugin.json`
+
+Install it the same way you install other external OpenClaw channel plugins in your environment, then make sure OpenClaw can load the built package.
+
+### 4. Add OpenClaw channel config
 
 Suggested OpenClaw config:
 
@@ -151,6 +171,33 @@ Suggested OpenClaw config:
   }
 }
 ```
+
+Useful optional fields:
+
+- `defaultTo`
+  Default conversation id for outbound sends when no explicit target is provided.
+- `dmPolicy`
+  Typical value is `pairing` for a real DM onboarding flow.
+- `allowFrom`
+  DM allowlist entries.
+- `approvalAllowFrom`
+  Identities allowed to submit approval actions over the channel.
+
+### 5. Start OpenClaw
+
+Once the Worker is reachable and the plugin is installed, start OpenClaw with the config that includes `channels.cf-do-channel`.
+
+At runtime, OpenClaw keeps a persistent provider WebSocket open to the Worker bridge.
+
+## Local Dev
+
+For a full local loop:
+
+1. Run the Worker locally with `npm run dev`.
+2. Start OpenClaw with the plugin enabled and `baseUrl` pointing at the local Worker.
+3. Use the demo app or the headless client SDK to connect as a client.
+
+The demo app is optional. The stable integration surface is the SDK in [packages/channel-client](./packages/channel-client).
 
 ## Bridge API
 

@@ -1,6 +1,13 @@
 # OpenClaw Cloudflare Channel Plugin
 
-This package is a scaffold for a native OpenClaw channel plugin that targets the Worker in this repository.
+This package is a native OpenClaw channel plugin that targets the Worker in this repository.
+
+The install shape is standard for an OpenClaw channel plugin:
+
+1. build the package
+2. install it where OpenClaw can load it
+3. add a `channels.cf-do-channel` config block
+4. make sure the Cloudflare Worker bridge is running
 
 ## Current Scope
 
@@ -28,6 +35,14 @@ This package is a scaffold for a native OpenClaw channel plugin that targets the
     }
   }
 }
+```
+
+## Build
+
+From the repo root:
+
+```bash
+pnpm --filter @pandemicsyn/openclaw-cf-do-channel build
 ```
 
 ## Transport Shape
