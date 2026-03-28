@@ -32,6 +32,8 @@ Important packages:
 
 Architecture details live in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
+Contributor and agent guidance lives in [SKILLS.md](./SKILLS.md), with the concrete skill definition in [`skills/cloudflare-openclaw-channel/SKILL.md`](./skills/cloudflare-openclaw-channel/SKILL.md).
+
 ## Hello World
 
 This is the simplest way to use the client SDK from your own app:
