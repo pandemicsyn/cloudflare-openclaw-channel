@@ -1,0 +1,73 @@
+import type { ApprovalDecision, ChannelApprovalState } from "@pandemicsyn/cf-do-channel-client";
+
+type ApprovalCardProps = {
+	approval: ChannelApprovalState;
+	onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
+};
+
+const DEFAULT_DECISIONS: ReadonlyArray<{
+	decision: ApprovalDecision;
+	label: string;
+	style: "primary" | "success" | "danger";
+}> = [
+	{ decision: "allow-once", label: "Allow Once", style: "primary" },
+	{ decision: "allow-always", label: "Always Allow", style: "success" },
+	{ decision: "deny", label: "Deny", style: "danger" },
+];
+
+export function ApprovalCard(props: ApprovalCardProps) {
+	const actions =
+		props.approval.buttons && props.approval.buttons.length > 0
+			? props.approval.buttons
+					.flatMap((button) =>
+						button.action.type === "approval.resolve"
+							? [
+									{
+										id: button.id,
+										label: button.label,
+										style: button.style ?? "secondary",
+										decision: button.action.decision,
+									},
+								]
+							: [],
+					)
+			: buildDecisionActions(props.approval.allowedDecisions);
+
+	return (
+		<div className="approval-card">
+			<div className="approval-copy">
+				<strong>{props.approval.title ?? "Approval Required"}</strong>
+				<span>{props.approval.body ?? "OpenClaw requires an approval decision."}</span>
+			</div>
+			<code>{props.approval.approvalId}</code>
+			<div className="button-row">
+				{actions.map((item) => (
+					<button
+						key={`${props.approval.approvalId}:${item.id}`}
+						className={`btn btn-${item.style}`}
+						onClick={() => props.onResolveApproval(props.approval.approvalId, item.decision)}
+					>
+						{item.label}
+					</button>
+				))}
+			</div>
+		</div>
+	);
+}
+
+function buildDecisionActions(
+	allowedDecisions?: ApprovalDecision[],
+): Array<{
+	id: string;
+	label: string;
+	style: "primary" | "secondary" | "success" | "danger";
+	decision: ApprovalDecision;
+}> {
+	const allowed = allowedDecisions && allowedDecisions.length > 0 ? allowedDecisions : DEFAULT_DECISIONS.map((item) => item.decision);
+	return DEFAULT_DECISIONS.filter((item) => allowed.includes(item.decision)).map((item) => ({
+		id: item.decision,
+		label: item.label,
+		style: item.style,
+		decision: item.decision,
+	}));
+}

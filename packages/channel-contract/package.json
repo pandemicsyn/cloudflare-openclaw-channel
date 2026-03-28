@@ -1,0 +1,19 @@
+{
+	"name": "@pandemicsyn/cf-do-channel-contract",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Shared protocol and route helpers for the Cloudflare Durable Object OpenClaw channel",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsup"
+	}
+}

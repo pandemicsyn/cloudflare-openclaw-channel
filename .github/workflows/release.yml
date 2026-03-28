@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Bundle release artifacts
+        run: |
+          mkdir -p artifacts
+          tar -czf "artifacts/channel-contract-${RELEASE_TAG}.tgz" \
+            -C packages/channel-contract package.json dist
+          tar -czf "artifacts/channel-client-${RELEASE_TAG}.tgz" \
+            -C packages/channel-client package.json README.md dist
+          tar -czf "artifacts/openclaw-channel-${RELEASE_TAG}.tgz" \
+            -C packages/openclaw-channel package.json README.md openclaw.plugin.json dist
+          tar -czf "artifacts/source-${RELEASE_TAG}.tgz" \
+            --exclude="./node_modules" \
+            --exclude="./artifacts" \
+            .
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${RELEASE_TAG}" artifacts/* \
+            --generate-notes \
+            --title "${RELEASE_TAG}"

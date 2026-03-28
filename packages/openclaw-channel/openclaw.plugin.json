@@ -1,0 +1,49 @@
+{
+	"id": "cf-do-channel",
+	"kind": "channel",
+	"channels": [
+		"cf-do-channel"
+	],
+	"name": "Cloudflare Durable Object Channel",
+	"description": "Bridge OpenClaw to a Cloudflare Worker-backed persistent chat surface",
+	"configSchema": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+			"cf-do-channel": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"baseUrl": {
+						"type": "string"
+					},
+					"serviceToken": {
+						"type": "string"
+					},
+					"defaultTo": {
+						"type": "string"
+					},
+					"dmPolicy": {
+						"type": "string"
+					},
+					"allowFrom": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					},
+					"approvalAllowFrom": {
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				},
+				"required": [
+					"baseUrl",
+					"serviceToken"
+				]
+			}
+		}
+	}
+}

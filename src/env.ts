@@ -1,0 +1,11 @@
+export type WorkerEnv = Omit<
+	Env,
+	"CHANNEL_ID" | "CHANNEL_USERS_JSON" | "CHANNEL_CLIENT_CREDENTIALS_JSON"
+> & {
+	CHANNEL_ID?: string;
+	CHANNEL_PUBLIC_TOKEN?: string;
+	CHANNEL_SERVICE_TOKEN?: string;
+	CHANNEL_JWT_SECRET?: string;
+	CHANNEL_USERS_JSON?: string;
+	CHANNEL_CLIENT_CREDENTIALS_JSON?: string;
+};
