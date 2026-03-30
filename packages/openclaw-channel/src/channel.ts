@@ -5,6 +5,7 @@ import {
 
 import {
 	buildConversationMessagesPath,
+	parseConversationIdFromTarget,
 	DEFAULT_ACCOUNT_ID,
 	DEFAULT_CHANNEL_ID,
 	type ApprovalDecision,
@@ -17,8 +18,29 @@ import {
 	registerBridgeManager,
 } from "./bridge-manager.js";
 import { readSenderBinding } from "./binding-store.js";
+import { clearThreadBindingAdapter, ensureThreadBindingAdapter } from "./thread-bindings.js";
 
 const PAIRING_APPROVED_MESSAGE = "✅ OpenClaw access approved. Send a message to start chatting.";
+
+function readProcessEnv(key: string): string | undefined {
+	const processValue = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+	return processValue?.env?.[key];
+}
+
+const channelDebugEnabled =
+	readProcessEnv("OPENCLAW_CF_DO_DEBUG") === "1" || readProcessEnv("CF_DO_CHANNEL_DEBUG") === "1";
+
+function logChannelDebug(event: string, details?: Record<string, unknown>): void {
+	if (!channelDebugEnabled) {
+		return;
+	}
+	const prefix = `[cf-do-channel][${new Date().toISOString()}] ${event}`;
+	if (!details) {
+		console.log(prefix);
+		return;
+	}
+	console.log(prefix, details);
+}
 
 type ResolvedAccount = {
 	accountId: string | null;
@@ -29,6 +51,18 @@ type ResolvedAccount = {
 	allowFrom: string[];
 	approvalAllowFrom: string[];
 };
+
+function normalizeConversationTarget(value?: string): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) {
+		return undefined;
+	}
+	return parseConversationIdFromTarget(trimmed);
+}
+
+function normalizeOutboundConversationId(value: string): string {
+	return normalizeConversationTarget(value) ?? value.trim();
+}
 
 function resolveSection(cfg: OpenClawConfig): Record<string, unknown> {
 	const value = ((cfg.channels ?? {}) as Record<string, unknown>)[DEFAULT_CHANNEL_ID];
@@ -45,6 +79,54 @@ function readStringList(record: Record<string, unknown>, key: string): string[] 
 	return Array.isArray(value)
 		? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
 		: [];
+}
+
+function getExecApprovalReplyMetadataCompat(payload: {
+	channelData?: unknown;
+}): {
+	approvalId: string;
+	approvalSlug: string;
+	allowedDecisions?: readonly ApprovalDecision[];
+} | null {
+	const channelData =
+		payload &&
+		typeof payload === "object" &&
+		"channelData" in payload &&
+		payload.channelData &&
+		typeof payload.channelData === "object" &&
+		!Array.isArray(payload.channelData)
+			? (payload.channelData as Record<string, unknown>)
+			: null;
+	const execApproval =
+		channelData &&
+		channelData.execApproval &&
+		typeof channelData.execApproval === "object" &&
+		!Array.isArray(channelData.execApproval)
+			? (channelData.execApproval as {
+					approvalId?: unknown;
+					approvalSlug?: unknown;
+					allowedDecisions?: unknown;
+				})
+			: null;
+	const approvalId =
+		typeof execApproval?.approvalId === "string" ? execApproval.approvalId.trim() : "";
+	const approvalSlug =
+		typeof execApproval?.approvalSlug === "string" ? execApproval.approvalSlug.trim() : "";
+	if (!approvalId || !approvalSlug) {
+		return null;
+	}
+	const allowedDecisionsRaw = execApproval?.allowedDecisions;
+	const allowedDecisions = Array.isArray(allowedDecisionsRaw)
+		? allowedDecisionsRaw.filter(
+				(value): value is ApprovalDecision =>
+					value === "allow-once" || value === "allow-always" || value === "deny",
+			)
+		: undefined;
+	return {
+		approvalId,
+		approvalSlug,
+		allowedDecisions,
+	};
 }
 
 function resolveAccount(cfg: OpenClawConfig, accountId?: string | null): ResolvedAccount {
@@ -196,6 +278,32 @@ function extractUiFromPayload(payload: {
 	if (cfDoChannel?.ui) {
 		return cfDoChannel.ui;
 	}
+	const execApproval =
+		channelData.execApproval &&
+		typeof channelData.execApproval === "object" &&
+		!Array.isArray(channelData.execApproval)
+			? (channelData.execApproval as { approvalId?: string; allowedDecisions?: unknown[] })
+			: undefined;
+	const approvalId = execApproval?.approvalId?.trim();
+	if (approvalId && execApproval) {
+		const decisions = execApproval.allowedDecisions;
+		const allowedDecisions = Array.isArray(decisions)
+			? decisions.filter(
+					(value): value is ApprovalDecision =>
+						value === "allow-once" || value === "allow-always" || value === "deny",
+				)
+			: [];
+		if (allowedDecisions.length > 0) {
+			const approvalKind = approvalId.startsWith("plugin:") ? "plugin" : "exec";
+			return buildApprovalUi({
+				title: approvalKind === "plugin" ? "Plugin Approval Required" : "Exec Approval Required",
+				body: payload.text?.trim() || "Approval required.",
+				approvalId,
+				approvalKind,
+				allowedDecisions,
+			});
+		}
+	}
 	return undefined;
 }
 
@@ -282,7 +390,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			isConfigured: (account: ResolvedAccount) => Boolean(account.baseUrl && account.serviceToken),
 		},
 		messaging: {
-			normalizeTarget: (target: string) => target.trim() || undefined,
+			normalizeTarget: (target: string) => normalizeConversationTarget(target),
 			targetResolver: {
 				looksLikeId: (id: string) => Boolean(id?.trim()),
 				hint: "<conversation-id>",
@@ -293,9 +401,20 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
 				return account.approvalAllowFrom.length > 0 ? { kind: "enabled" } : { kind: "disabled" };
 			},
-			shouldSuppressLocalPrompt: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
+			shouldSuppressLocalPrompt: ({
+				cfg,
+				accountId,
+				payload,
+			}: {
+				cfg: OpenClawConfig;
+				accountId?: string | null;
+				payload: { channelData?: unknown };
+			}) => {
 				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-				return account.approvalAllowFrom.length > 0;
+				if (account.approvalAllowFrom.length === 0) {
+					return false;
+				}
+				return getExecApprovalReplyMetadataCompat(payload) !== null;
 			},
 			hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) => {
 				const section = resolveSection(cfg);
@@ -313,6 +432,8 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						execApproval: {
 							approvalId: request.id,
 							approvalSlug: request.id.slice(0, 8),
+							approvalKind: "exec",
+							status: "required",
 							allowedDecisions: ["allow-once", "allow-always", "deny"],
 						},
 						cfDoChannel: {
@@ -332,6 +453,8 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 					execApproval: {
 						approvalId: resolved.id,
 						approvalSlug: String(resolved.id ?? "").slice(0, 8),
+						approvalKind: "exec",
+						status: "resolved",
 						allowedDecisions: [],
 					},
 					cfDoChannel: {
@@ -373,6 +496,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 		},
 		gateway: {
 			startAccount: async (ctx) => {
+				ensureThreadBindingAdapter(ctx.accountId);
 				const manager = registerBridgeManager({
 					cfg: ctx.cfg,
 					account: ctx.account,
@@ -389,6 +513,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			},
 			stopAccount: async (ctx: { accountId: string }) => {
 				clearBridgeManager(ctx.accountId);
+				clearThreadBindingAdapter(ctx.accountId);
 			},
 		},
 	},
@@ -472,14 +597,15 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 				cfg?: OpenClawConfig;
 				accountId?: string | null;
 			}) => {
-				const trimmed = to?.trim();
-				if (trimmed) {
-					return { ok: true as const, to: trimmed };
+				const normalized = normalizeConversationTarget(to);
+				if (normalized) {
+					return { ok: true as const, to: normalized };
 				}
 				if (cfg) {
 					const account = resolveAccount(cfg, accountId);
-					if (account.defaultTo) {
-						return { ok: true as const, to: account.defaultTo };
+					const defaultTarget = normalizeConversationTarget(account.defaultTo);
+					if (defaultTarget) {
+						return { ok: true as const, to: defaultTarget };
 					}
 				}
 				return { ok: false as const, error: new Error("cf-do-channel target is required") };
@@ -502,6 +628,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			}) => {
 				const account = resolveAccount(cfg, accountId);
 				const manager = getBridgeManager(account.accountId);
+				const conversationId = normalizeOutboundConversationId(to);
 				const text = [
 					payload.text?.trim() ?? "",
 					payload.mediaUrl,
@@ -510,13 +637,30 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 					.filter((entry): entry is string => Boolean(entry?.trim()))
 					.join("\n\n");
 				const ui = extractUiFromPayload(payload);
+				logChannelDebug("sendPayload.received", {
+					accountId: account.accountId ?? DEFAULT_ACCOUNT_ID,
+					to: conversationId,
+					managerPresent: Boolean(manager),
+					managerConnected: manager?.isConnected ?? false,
+					uiKind: ui?.kind,
+					textPreview: text.slice(0, 180),
+					channelDataKeys:
+						payload.channelData && typeof payload.channelData === "object"
+							? Object.keys(payload.channelData)
+							: [],
+				});
 				if (manager) {
 					if (payload.channelData && typeof payload.channelData === "object") {
 						const execApproval = (payload.channelData as Record<string, unknown>).execApproval;
 						if (execApproval && typeof execApproval === "object" && !Array.isArray(execApproval)) {
 							const approval = execApproval as { approvalId?: string; allowedDecisions?: ApprovalDecision[] };
+							logChannelDebug("sendPayload.execApproval.status", {
+								to: conversationId,
+								approvalId: approval.approvalId,
+								allowedDecisions: approval.allowedDecisions,
+							});
 							await manager.sendProviderStatus({
-								conversationId: to,
+								conversationId,
 								kind:
 									Array.isArray(approval.allowedDecisions) && approval.allowedDecisions.length > 0
 										? "approval_required"
@@ -529,8 +673,13 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 							});
 						}
 					}
+					logChannelDebug("sendPayload.providerMessage", {
+						to: conversationId,
+						managerConnected: manager.isConnected,
+						uiKind: ui?.kind,
+					});
 					await manager.sendProviderMessage({
-						conversationId: to,
+						conversationId,
 						text,
 						role: "assistant",
 						ui,
@@ -541,7 +690,11 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						messageId: `provider_${Date.now()}`,
 					};
 				}
-				return await sendOutboundMessage(account, to, {
+				logChannelDebug("sendPayload.restFallback", {
+					to: conversationId,
+					uiKind: ui?.kind,
+				});
+				return await sendOutboundMessage(account, conversationId, {
 					role: "assistant",
 					text,
 					metadata: payload.channelData,
@@ -559,14 +712,15 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			}) => {
 				const account = resolveAccount(params.cfg, params.accountId);
 				const manager = getBridgeManager(account.accountId);
+				const conversationId = normalizeOutboundConversationId(params.to);
 				if (manager) {
 					await manager.sendProviderMessage({
-						conversationId: params.to,
+						conversationId,
 						text: params.text,
 						role: "assistant",
 					});
 					await manager.sendProviderStatus({
-						conversationId: params.to,
+						conversationId,
 						kind: "final",
 						message: "Reply complete.",
 					});
@@ -574,7 +728,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						messageId: `provider_${Date.now()}`,
 					};
 				}
-				const result = await sendOutboundMessage(account, params.to, {
+				const result = await sendOutboundMessage(account, conversationId, {
 					role: "assistant",
 					text: params.text,
 				});
@@ -592,9 +746,10 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 				const account = resolveAccount(params.cfg, params.accountId);
 				const text = params.mediaUrl ? `${params.text}\n\n${params.mediaUrl}`.trim() : params.text;
 				const manager = getBridgeManager(account.accountId);
+				const conversationId = normalizeOutboundConversationId(params.to);
 				if (manager) {
 					await manager.sendProviderMessage({
-						conversationId: params.to,
+						conversationId,
 						text,
 						role: "assistant",
 						metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,
@@ -603,7 +758,7 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 						messageId: `provider_${Date.now()}`,
 					};
 				}
-				const result = await sendOutboundMessage(account, params.to, {
+				const result = await sendOutboundMessage(account, conversationId, {
 					role: "assistant",
 					text,
 					metadata: params.mediaUrl ? { mediaUrl: params.mediaUrl } : undefined,

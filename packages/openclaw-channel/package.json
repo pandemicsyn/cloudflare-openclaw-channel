@@ -1,7 +1,6 @@
 {
 	"name": "@pandemicsyn/openclaw-cf-do-channel",
 	"version": "0.0.0",
-	"private": true,
 	"type": "module",
 	"description": "OpenClaw channel plugin scaffold for a Cloudflare Worker and Durable Objects transport",
 	"exports": {

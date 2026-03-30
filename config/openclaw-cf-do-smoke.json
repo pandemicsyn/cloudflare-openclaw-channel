@@ -1,0 +1,64 @@
+{
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "tools": {
+    "exec": {
+      "host": "gateway",
+      "security": "allowlist",
+      "ask": "always",
+      "strictInlineEval": true
+    }
+  },
+  "approvals": {
+    "exec": {
+      "enabled": true,
+      "mode": "session"
+    }
+  },
+  "channels": {
+    "cf-do-channel": {
+      "baseUrl": "http://127.0.0.1:8787",
+      "serviceToken": "test-service-token",
+      "dmPolicy": "pairing",
+      "allowFrom": [],
+      "approvalAllowFrom": [
+        "operator_1",
+        "user_123"
+      ]
+    }
+  },
+  "gateway": {
+    "auth": {
+      "mode": "token",
+      "token": "test-gateway-token"
+    }
+  },
+  "plugins": {
+    "load": {
+      "paths": [
+        "/Users/pandemicsyn/projects/cloudflare-openclaw-channel/packages/openclaw-channel"
+      ]
+    },
+    "entries": {
+      "cf-do-channel": {
+        "enabled": true,
+        "config": {}
+      }
+    }
+  },
+  "meta": {
+    "lastTouchedVersion": "2026.3.27",
+    "lastTouchedAt": "2026-03-29T18:09:18.742Z"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "kilocode/kilo/auto"
+      }
+    }
+  }
+}

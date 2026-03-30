@@ -2,7 +2,9 @@ import {
 	DEFAULT_ACCOUNT_ID,
 	DEFAULT_CHANNEL_ID,
 	buildBridgeWebSocketPath,
+	buildChannelAddress,
 	buildConversationMessagesPath,
+	buildConversationStatusPath,
 	createMessageId,
 	type ChannelMessage,
 	type ChannelStatusKind,
@@ -12,6 +14,9 @@ import {
 	type ProviderInboundEvent,
 	type ProviderMessageEvent,
 	type ProviderStatusEvent,
+	type ThreadAgentDescriptor,
+	type ThreadRouteCatalog,
+	type ThreadRouteState,
 } from "../../channel-contract/src/index.js";
 import { createChannelPairingChallengeIssuer } from "openclaw/plugin-sdk/channel-pairing";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
@@ -19,6 +24,10 @@ import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/com
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { ApprovalGatewayClient } from "./approval-client.js";
 import { recordSenderBinding } from "./binding-store.js";
+import {
+	configureConversationThreadRoute,
+	resolveConversationRoute,
+} from "./thread-bindings.js";
 
 type ResolvedAccount = {
 	accountId: string | null;
@@ -72,6 +81,66 @@ function buildPairingUi(params: { senderId: string; code?: string }): ChannelUi 
 	};
 }
 
+function buildThreadRouteNoticeBody(route: ThreadRouteState): string {
+	if (route.mode === "agent" && route.agentId) {
+		return `Thread pinned to agent ${route.agentId}. Resolved session ${route.resolvedSessionKey ?? "unknown"}.`;
+	}
+	if (route.mode === "session" && route.targetSessionKey) {
+		return `Thread pinned to session ${route.targetSessionKey}.`;
+	}
+	if (route.source === "configured") {
+		return `Thread follows configured routing to ${route.resolvedAgentId ?? "the configured target"}.`;
+	}
+	return `Thread uses automatic routing via ${route.resolvedAgentId ?? "the default agent"}.`;
+}
+
+function buildThreadRouteUi(route: ThreadRouteState): ChannelUi {
+	return {
+		kind: "notice",
+		title: route.mode === "auto" ? "Thread Route" : "Thread Route Updated",
+		body: buildThreadRouteNoticeBody(route),
+		badge: route.mode === "auto" ? route.source : route.mode,
+	};
+}
+
+function buildThreadRouteCatalog(cfg: OpenClawConfig): ThreadRouteCatalog | undefined {
+	const agents = Array.isArray(cfg.agents?.list) ? cfg.agents.list : [];
+	const descriptors: ThreadAgentDescriptor[] = [];
+	for (const entry of agents) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+			continue;
+		}
+		const id = typeof entry.id === "string" ? entry.id.trim() : "";
+		if (!id) {
+			continue;
+		}
+		descriptors.push({
+			id,
+			name: typeof entry.name === "string" ? entry.name.trim() || undefined : undefined,
+			workspace: typeof entry.workspace === "string" ? entry.workspace.trim() || undefined : undefined,
+			default: entry.default === true ? true : undefined,
+		});
+	}
+	if (descriptors.length === 0) {
+		return undefined;
+	}
+	const explicitDefault = descriptors.find((entry) => entry.default)?.id;
+	return {
+		agents: descriptors,
+		defaultAgentId: explicitDefault ?? (descriptors.length === 1 ? descriptors[0]?.id : undefined),
+		updatedAt: new Date().toISOString(),
+	};
+}
+
+function buildThreadRouteMetadata(cfg: OpenClawConfig, route: ThreadRouteState): Record<string, unknown> {
+	return {
+		cfDoChannel: {
+			threadRoute: route,
+			threadCatalog: buildThreadRouteCatalog(cfg),
+		},
+	};
+}
+
 async function postFallbackMessage(
 	account: ResolvedAccount,
 	conversationId: string,
@@ -95,6 +164,32 @@ async function postFallbackMessage(
 	});
 	if (!response.ok) {
 		throw new Error(`bridge fallback failed (${response.status}): ${await response.text()}`);
+	}
+}
+
+async function postFallbackStatus(
+	account: ResolvedAccount,
+	conversationId: string,
+	status: {
+		kind: ChannelStatusKind;
+		message?: string;
+		referenceId?: string;
+		approvalId?: string;
+		approvalKind?: "exec" | "plugin" | "pairing";
+		details?: Record<string, unknown>;
+	},
+): Promise<void> {
+	const url = new URL(buildConversationStatusPath(conversationId), account.baseUrl).toString();
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${account.serviceToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify(status),
+	});
+	if (!response.ok) {
+		throw new Error(`bridge status fallback failed (${response.status}): ${await response.text()}`);
 	}
 }
 
@@ -191,20 +286,22 @@ export class BridgeConnectionManager {
 		approvalKind?: "exec" | "plugin" | "pairing";
 		details?: Record<string, unknown>;
 	}): Promise<void> {
+		const status = {
+			kind: params.kind,
+			message: params.message,
+			referenceId: params.referenceId,
+			approvalId: params.approvalId,
+			approvalKind: params.approvalKind,
+			details: params.details,
+		};
 		if (!this.socket || !this.connected) {
+			await postFallbackStatus(this.ctx.account, params.conversationId, status);
 			return;
 		}
 		await this.sendProviderEvent({
 			type: "provider.status",
 			conversationId: params.conversationId,
-			status: {
-				kind: params.kind,
-				message: params.message,
-				referenceId: params.referenceId,
-				approvalId: params.approvalId,
-				approvalKind: params.approvalKind,
-				details: params.details,
-			},
+			status,
 		} satisfies ProviderStatusEvent);
 	}
 
@@ -321,53 +418,145 @@ export class BridgeConnectionManager {
 	}
 
 	private async handleAction(envelope: ProviderActionEvent): Promise<void> {
-		if (envelope.action.type !== "approval.resolve") {
-			return;
-		}
-		if (!isAllowedSender(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
-			await this.sendProviderStatus({
-				conversationId: envelope.conversationId,
-				kind: "approval_resolved",
-				approvalId: envelope.action.approvalId,
-				message: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
-				details: { ok: false, reason: "not-allowed" },
-			});
-			return;
-		}
-		this.approvalClient ??= new ApprovalGatewayClient({
-			cfg: this.ctx.cfg,
-			log: this.ctx.log,
-		});
-		await this.sendProviderStatus({
-			conversationId: envelope.conversationId,
-			kind: "working",
-			referenceId: envelope.actionId,
-			approvalId: envelope.action.approvalId,
-			message: "Submitting approval decision to OpenClaw.",
-		});
-		try {
-			await this.approvalClient.resolveApproval({
-				id: envelope.action.approvalId,
-				decision: envelope.action.decision,
+		if (envelope.action.type === "approval.resolve") {
+			if (!isAllowedSender(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
+					role: "system",
+					ui: {
+						kind: "notice",
+						title: "Approval Not Authorized",
+						body: `${envelope.senderId} is not allowed to approve actions on this channel.`,
+						badge: "denied",
+					},
+				});
+				return;
+			}
+			this.approvalClient ??= new ApprovalGatewayClient({
+				cfg: this.ctx.cfg,
+				log: this.ctx.log,
 			});
 			await this.sendProviderStatus({
 				conversationId: envelope.conversationId,
-				kind: "approval_resolved",
+				kind: "working",
 				referenceId: envelope.actionId,
 				approvalId: envelope.action.approvalId,
-				message: `Approval submitted: ${envelope.action.decision}.`,
-				details: { ok: true, decision: envelope.action.decision },
+				message: "Submitting approval decision to OpenClaw.",
 			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			try {
+				await this.approvalClient.resolveApproval({
+					id: envelope.action.approvalId,
+					decision: envelope.action.decision,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: `Approval submit failed: ${message}`,
+					role: "system",
+					ui: {
+						kind: "notice",
+						title: "Approval Submit Failed",
+						body: message,
+						badge: "error",
+					},
+				});
+			}
+			return;
+		}
+
+		if (envelope.action.type === "thread.inspect") {
+			try {
+				const resolved = await resolveConversationRoute({
+					cfg: this.ctx.cfg,
+					accountId: this.ctx.account.accountId,
+					conversationId: envelope.conversationId,
+				});
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: buildThreadRouteNoticeBody(resolved.threadRoute),
+					role: "system",
+					ui: buildThreadRouteUi(resolved.threadRoute),
+					metadata: buildThreadRouteMetadata(this.ctx.cfg, resolved.threadRoute),
+				});
+				await this.sendProviderStatus({
+					conversationId: envelope.conversationId,
+					kind: "final",
+					referenceId: envelope.actionId,
+					message: "Thread route loaded.",
+					details: { ok: true },
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: `Thread route inspect failed: ${message}`,
+					role: "system",
+					ui: {
+						kind: "notice",
+						title: "Thread Route Inspect Failed",
+						body: message,
+						badge: "error",
+					},
+				});
+			}
+			return;
+		}
+
+		if (envelope.action.type === "thread.configure") {
 			await this.sendProviderStatus({
 				conversationId: envelope.conversationId,
-				kind: "approval_resolved",
+				kind: "working",
 				referenceId: envelope.actionId,
-				approvalId: envelope.action.approvalId,
-				message: `Approval submit failed: ${message}`,
-				details: { ok: false, error: message },
+				message: "Updating thread route.",
 			});
+			try {
+				const route = await configureConversationThreadRoute({
+					cfg: this.ctx.cfg,
+					accountId: this.ctx.account.accountId,
+					conversationId: envelope.conversationId,
+					mode: envelope.action.mode,
+					agentId: envelope.action.agentId,
+					sessionKey: envelope.action.sessionKey,
+					label: envelope.action.label,
+					actorId: envelope.senderId,
+				});
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: buildThreadRouteNoticeBody(route),
+					role: "system",
+					ui: buildThreadRouteUi(route),
+					metadata: buildThreadRouteMetadata(this.ctx.cfg, route),
+				});
+				await this.sendProviderStatus({
+					conversationId: envelope.conversationId,
+					kind: "final",
+					referenceId: envelope.actionId,
+					message: "Thread route updated.",
+					details: { ok: true },
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				await this.sendProviderMessage({
+					conversationId: envelope.conversationId,
+					text: `Thread route update failed: ${message}`,
+					role: "system",
+					ui: {
+						kind: "notice",
+						title: "Thread Route Update Failed",
+						body: message,
+						badge: "error",
+					},
+				});
+				await this.sendProviderStatus({
+					conversationId: envelope.conversationId,
+					kind: "final",
+					referenceId: envelope.actionId,
+					message: "Thread route update failed.",
+					details: { ok: false, error: message },
+				});
+			}
 		}
 	}
 
@@ -491,10 +680,21 @@ export class BridgeConnectionManager {
 			referenceId: inbound.event.messageId,
 			message: "OpenClaw is thinking.",
 		});
+		const resolvedRoute = await resolveConversationRoute({
+			cfg: this.ctx.cfg,
+			accountId: this.ctx.account.accountId,
+			conversationId,
+		});
 		await dispatchInboundDirectDmWithRuntime({
 			cfg: this.ctx.cfg,
 			runtime: {
-				channel: this.ctx.channelRuntime,
+				channel: {
+					...this.ctx.channelRuntime,
+					routing: {
+						...this.ctx.channelRuntime.routing,
+						resolveAgentRoute: () => resolvedRoute.route,
+					},
+				},
 			},
 			channel: DEFAULT_CHANNEL_ID,
 			channelLabel: "Cloudflare OpenClaw Channel",
@@ -503,10 +703,10 @@ export class BridgeConnectionManager {
 				kind: "direct",
 				id: conversationId,
 			},
-			senderId,
-			senderAddress: `cf-do:${senderId}`,
-			recipientAddress: `cf-do:${conversationId}`,
-			conversationLabel: conversationId,
+				senderId,
+				senderAddress: buildChannelAddress(senderId),
+				recipientAddress: buildChannelAddress(conversationId),
+				conversationLabel: conversationId,
 			rawBody: text,
 			messageId: inbound.event.messageId?.trim() || createMessageId("inbound"),
 			timestamp: Date.now(),
@@ -532,7 +732,10 @@ export class BridgeConnectionManager {
 					conversationId,
 					text: parts.join("\n\n"),
 					participantId: senderId,
-					metadata: inbound.senderName ? { userName: inbound.senderName } : undefined,
+					metadata: {
+						...(inbound.senderName ? { userName: inbound.senderName } : {}),
+						...buildThreadRouteMetadata(this.ctx.cfg, resolvedRoute.threadRoute),
+					},
 				});
 			},
 			onRecordError: (error: unknown) => {

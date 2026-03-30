@@ -16,6 +16,7 @@ const DEFAULT_DECISIONS: ReadonlyArray<{
 ];
 
 export function ApprovalCard(props: ApprovalCardProps) {
+	const isPairingApproval = props.approval.approvalKind === "pairing";
 	const actions =
 		props.approval.buttons && props.approval.buttons.length > 0
 			? props.approval.buttons
@@ -31,7 +32,9 @@ export function ApprovalCard(props: ApprovalCardProps) {
 								]
 							: [],
 					)
-			: buildDecisionActions(props.approval.allowedDecisions);
+			: isPairingApproval
+				? []
+				: buildDecisionActions(props.approval.allowedDecisions);
 
 	return (
 		<div className="approval-card">
@@ -39,7 +42,17 @@ export function ApprovalCard(props: ApprovalCardProps) {
 				<strong>{props.approval.title ?? "Approval Required"}</strong>
 				<span>{props.approval.body ?? "OpenClaw requires an approval decision."}</span>
 			</div>
-			<code>{props.approval.approvalId}</code>
+			<div className="approval-id">
+				<span>Channel ID</span>
+				<code>{props.approval.approvalId}</code>
+			</div>
+			{isPairingApproval && actions.length === 0 ? (
+				<div className="pairing-instructions">
+					<span>Approve from your operator channel, or run:</span>
+					<code>openclaw pairing list --channel cf-do-channel</code>
+					<code>openclaw pairing approve --channel cf-do-channel &lt;PAIRING_CODE&gt; --notify</code>
+				</div>
+			) : null}
 			<div className="button-row">
 				{actions.map((item) => (
 					<button

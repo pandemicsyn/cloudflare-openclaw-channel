@@ -11,6 +11,11 @@ import {
 	type ClientEvent,
 	type ServerEvent,
 	type ServerStatusEvent,
+	type ThreadAgentDescriptor,
+	type ThreadRouteCatalog,
+	type ThreadRouteMode,
+	type ThreadRouteSource,
+	type ThreadRouteState,
 } from "../../channel-contract/src/index.js";
 
 export type {
@@ -18,6 +23,11 @@ export type {
 	ChannelMessage,
 	ChannelStatusKind,
 	ChannelUi,
+	ThreadAgentDescriptor,
+	ThreadRouteCatalog,
+	ThreadRouteMode,
+	ThreadRouteSource,
+	ThreadRouteState,
 } from "../../channel-contract/src/index.js";
 
 export type ChannelClientAuth =
@@ -369,6 +379,48 @@ export class ChannelClient {
 		return actionId;
 	}
 
+	async configureThreadRoute(params: {
+		mode: ThreadRouteMode;
+		agentId?: string;
+		sessionKey?: string;
+		label?: string;
+		metadata?: Record<string, unknown>;
+		actionId?: string;
+	}): Promise<string> {
+		const actionId = params.actionId?.trim() || createMessageId("action");
+		const action: ClientActionEvent = {
+			type: "client.action",
+			actionId,
+			action: {
+				type: "thread.configure",
+				mode: params.mode,
+				agentId: params.agentId,
+				sessionKey: params.sessionKey,
+				label: params.label,
+			},
+			metadata: params.metadata,
+		};
+		this.sendEnvelope(action);
+		return actionId;
+	}
+
+	async inspectThreadRoute(params?: {
+		metadata?: Record<string, unknown>;
+		actionId?: string;
+	}): Promise<string> {
+		const actionId = params?.actionId?.trim() || createMessageId("action");
+		const action: ClientActionEvent = {
+			type: "client.action",
+			actionId,
+			action: {
+				type: "thread.inspect",
+			},
+			metadata: params?.metadata,
+		};
+		this.sendEnvelope(action);
+		return actionId;
+	}
+
 	private async openSocket(): Promise<void> {
 		if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === 0)) {
 			return;
@@ -655,6 +707,8 @@ export type ChannelSessionState = {
 	pendingSends: ChannelPendingSend[];
 	approvals: ChannelApprovalState[];
 	statuses: ServerStatusEvent[];
+	threadRoute?: ThreadRouteState;
+	threadCatalog?: ThreadRouteCatalog;
 	lastError?: ChannelClientError;
 };
 
@@ -685,12 +739,12 @@ export class ChannelSession {
 			}),
 		);
 		this.unsubscribers.push(
-			client.on("message", ({ message }) => {
+			client.on("message", ({ conversationId, message }) => {
 				const messages = this.state.messages.some((entry) => entry.id === message.id)
 					? this.state.messages
 					: [...this.state.messages, message];
 				const pendingSends = this.state.pendingSends.filter((pending) => pending.messageId !== message.id);
-				const approvals = message.ui?.kind === "approval"
+				const approvalFromMessageUi = message.ui?.kind === "approval"
 					? upsertApproval(this.state.approvals, {
 							approvalId: message.ui.approvalId,
 							status: "required",
@@ -703,11 +757,47 @@ export class ChannelSession {
 							updatedAt: message.timestamp,
 						})
 					: this.state.approvals;
+				const approvalFromMetadata = deriveApprovalStateFromMessageMetadata(message);
+				const approvalFromMessage = approvalFromMetadata
+					? upsertApproval(approvalFromMessageUi, approvalFromMetadata)
+					: approvalFromMessageUi;
+				const threadRoute = deriveThreadRouteStateFromMessageMetadata(message) ?? this.state.threadRoute;
+				const threadCatalog =
+					deriveThreadRouteCatalogFromMessageMetadata(message) ?? this.state.threadCatalog;
+				const pairingResolution = derivePairingResolutionFromApprovedNotice(
+					approvalFromMessage,
+					conversationId,
+					message,
+				);
+				const approvals = pairingResolution.approvals;
+				let statuses = this.state.statuses;
+				const syntheticApprovalRequired = deriveApprovalRequiredStatusFromApprovalMessage(
+					conversationId,
+					message,
+					statuses,
+				);
+				if (syntheticApprovalRequired) {
+					statuses = [...statuses, syntheticApprovalRequired].slice(-20);
+				}
+				const syntheticApprovalFromMetadata = deriveApprovalStatusFromMessageMetadata(
+					conversationId,
+					message,
+					statuses,
+				);
+				if (syntheticApprovalFromMetadata) {
+					statuses = [...statuses, syntheticApprovalFromMetadata].slice(-20);
+				}
+				if (pairingResolution.syntheticStatus) {
+					statuses = [...statuses, pairingResolution.syntheticStatus].slice(-20);
+				}
 				this.setState({
 					...this.state,
 					messages,
 					pendingSends,
 					approvals,
+					statuses,
+					threadRoute,
+					threadCatalog,
 				});
 			}),
 		);
@@ -762,6 +852,13 @@ export class ChannelSession {
 			pendingSends: [...this.state.pendingSends],
 			approvals: [...this.state.approvals],
 			statuses: [...this.state.statuses],
+			threadRoute: this.state.threadRoute ? { ...this.state.threadRoute } : undefined,
+			threadCatalog: this.state.threadCatalog
+				? {
+						...this.state.threadCatalog,
+						agents: this.state.threadCatalog.agents.map((agent) => ({ ...agent })),
+					}
+				: undefined,
 			lastError: this.state.lastError,
 		};
 	}
@@ -832,6 +929,22 @@ export class ChannelSession {
 		return await this.client.resolveApproval(params);
 	}
 
+	async configureThreadRoute(params: {
+		mode: ThreadRouteMode;
+		agentId?: string;
+		sessionKey?: string;
+		label?: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<string> {
+		return await this.client.configureThreadRoute(params);
+	}
+
+	async inspectThreadRoute(params?: {
+		metadata?: Record<string, unknown>;
+	}): Promise<string> {
+		return await this.client.inspectThreadRoute(params);
+	}
+
 	dispose(): void {
 		for (const unsubscribe of this.unsubscribers) {
 			unsubscribe();
@@ -861,6 +974,353 @@ function upsertApproval(
 				}
 			: approval,
 	);
+}
+
+function deriveApprovalRequiredStatusFromApprovalMessage(
+	conversationId: string,
+	message: ChannelMessage,
+	currentStatuses: ServerStatusEvent[],
+): ServerStatusEvent | undefined {
+	if (message.ui?.kind !== "approval") {
+		return undefined;
+	}
+	const approvalId = message.ui.approvalId?.trim();
+	if (!approvalId) {
+		return undefined;
+	}
+	const alreadyTracked = currentStatuses.some(
+		(statusEvent) =>
+			statusEvent.status.kind === "approval_required" && statusEvent.status.approvalId === approvalId,
+	);
+	if (alreadyTracked) {
+		return undefined;
+	}
+	return {
+		type: "server.status",
+		conversationId,
+		status: {
+			kind: "approval_required",
+			approvalId,
+			approvalKind: message.ui.approvalKind,
+			message: message.ui.body,
+		},
+		timestamp: message.timestamp,
+	};
+}
+
+function parseApprovalMetadata(message: ChannelMessage): {
+	approvalId: string;
+	approvalKind?: "exec" | "plugin" | "pairing";
+	allowedDecisions?: ApprovalDecision[];
+	title?: string;
+	body?: string;
+	status: "required" | "resolved";
+} | undefined {
+	const metadata =
+		message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
+			? message.metadata
+			: undefined;
+	if (!metadata) {
+		return undefined;
+	}
+	const metadataRecord = metadata as Record<string, unknown>;
+	const channelData =
+		metadataRecord.channelData &&
+		typeof metadataRecord.channelData === "object" &&
+		!Array.isArray(metadataRecord.channelData)
+			? (metadataRecord.channelData as Record<string, unknown>)
+			: undefined;
+	const rawApproval = metadataRecord.execApproval ?? channelData?.execApproval;
+	const rawCfDoChannel = metadataRecord.cfDoChannel ?? channelData?.cfDoChannel;
+	const cfDoUi =
+		rawCfDoChannel && typeof rawCfDoChannel === "object" && !Array.isArray(rawCfDoChannel)
+			? (rawCfDoChannel as { ui?: unknown }).ui
+			: undefined;
+	const approval =
+		rawApproval && typeof rawApproval === "object" && !Array.isArray(rawApproval)
+			? (rawApproval as {
+					approvalId?: unknown;
+					approvalKind?: unknown;
+					allowedDecisions?: unknown;
+					title?: unknown;
+					body?: unknown;
+					status?: unknown;
+			  })
+			: undefined;
+	const approvalUi =
+		cfDoUi && typeof cfDoUi === "object" && !Array.isArray(cfDoUi)
+			? (cfDoUi as {
+					kind?: unknown;
+					approvalId?: unknown;
+					approvalKind?: unknown;
+					allowedDecisions?: unknown;
+					title?: unknown;
+					body?: unknown;
+			  })
+			: undefined;
+	const approvalId =
+		typeof approval?.approvalId === "string" && approval.approvalId.trim().length > 0
+			? approval.approvalId.trim()
+			: approvalUi?.kind === "approval" &&
+				  typeof approvalUi.approvalId === "string" &&
+				  approvalUi.approvalId.trim().length > 0
+				? approvalUi.approvalId.trim()
+			: undefined;
+	if (!approvalId) {
+		return undefined;
+	}
+	const allowedDecisionsRaw = Array.isArray(approval?.allowedDecisions)
+		? approval.allowedDecisions
+		: Array.isArray(approvalUi?.allowedDecisions)
+			? approvalUi.allowedDecisions
+			: undefined;
+	const allowedDecisions = allowedDecisionsRaw?.filter(
+		(decision): decision is ApprovalDecision =>
+			decision === "allow-once" || decision === "allow-always" || decision === "deny",
+	);
+	const approvalKind =
+		approval?.approvalKind === "exec" ||
+		approval?.approvalKind === "plugin" ||
+		approval?.approvalKind === "pairing"
+			? approval.approvalKind
+			: approvalUi?.approvalKind === "exec" ||
+				  approvalUi?.approvalKind === "plugin" ||
+				  approvalUi?.approvalKind === "pairing"
+				? approvalUi.approvalKind
+			: approvalId.startsWith("plugin:")
+				? "plugin"
+				: "exec";
+	const status =
+		approval?.status === "resolved" || (Array.isArray(allowedDecisionsRaw) && allowedDecisionsRaw.length === 0)
+			? "resolved"
+			: "required";
+	return {
+		approvalId,
+		approvalKind,
+		allowedDecisions,
+		title:
+			typeof approval?.title === "string"
+				? approval.title
+				: typeof approvalUi?.title === "string"
+					? approvalUi.title
+					: undefined,
+		body:
+			typeof approval?.body === "string"
+				? approval.body
+				: typeof approvalUi?.body === "string"
+					? approvalUi.body
+					: undefined,
+		status,
+	};
+}
+
+function deriveApprovalStateFromMessageMetadata(message: ChannelMessage): ChannelApprovalState | undefined {
+	const parsed = parseApprovalMetadata(message);
+	if (!parsed) {
+		return undefined;
+	}
+	const defaultAllowed = parsed.status === "required" ? (["allow-once", "allow-always", "deny"] as const) : [];
+	const allowedDecisions =
+		parsed.allowedDecisions && parsed.allowedDecisions.length > 0 ? parsed.allowedDecisions : [...defaultAllowed];
+	return {
+		approvalId: parsed.approvalId,
+		status: parsed.status,
+		approvalKind: parsed.approvalKind,
+		title: parsed.title ?? (parsed.status === "resolved" ? "Approval Resolved" : "Approval Required"),
+		body: parsed.body ?? message.text,
+		messageId: message.id,
+		allowedDecisions,
+		updatedAt: message.timestamp,
+	};
+}
+
+function deriveApprovalStatusFromMessageMetadata(
+	conversationId: string,
+	message: ChannelMessage,
+	currentStatuses: ServerStatusEvent[],
+): ServerStatusEvent | undefined {
+	const parsed = parseApprovalMetadata(message);
+	if (!parsed) {
+		return undefined;
+	}
+	const statusKind = parsed.status === "resolved" ? "approval_resolved" : "approval_required";
+	const alreadyTracked = currentStatuses.some(
+		(statusEvent) => statusEvent.status.kind === statusKind && statusEvent.status.approvalId === parsed.approvalId,
+	);
+	if (alreadyTracked) {
+		return undefined;
+	}
+	return {
+		type: "server.status",
+		conversationId,
+		status: {
+			kind: statusKind,
+			approvalId: parsed.approvalId,
+			approvalKind: parsed.approvalKind,
+			message: parsed.body ?? message.text,
+		},
+		timestamp: message.timestamp,
+	};
+}
+
+function deriveThreadRouteStateFromMessageMetadata(message: ChannelMessage): ThreadRouteState | undefined {
+	const cfDoChannel = readCfDoChannelMetadata(message);
+	const threadRoute =
+		cfDoChannel?.threadRoute &&
+		typeof cfDoChannel.threadRoute === "object" &&
+		!Array.isArray(cfDoChannel.threadRoute)
+			? (cfDoChannel.threadRoute as Record<string, unknown>)
+			: undefined;
+	if (!threadRoute) {
+		return undefined;
+	}
+	const conversationId =
+		typeof threadRoute.conversationId === "string" ? threadRoute.conversationId.trim() : "";
+	const mode = threadRoute.mode;
+	const source = threadRoute.source;
+	if (
+		!conversationId ||
+		(mode !== "auto" && mode !== "agent" && mode !== "session") ||
+		(source !== "default" && source !== "configured" && source !== "binding")
+	) {
+		return undefined;
+	}
+	return {
+		conversationId,
+		mode,
+		source,
+		resolvedAgentId:
+			typeof threadRoute.resolvedAgentId === "string" ? threadRoute.resolvedAgentId.trim() || undefined : undefined,
+		resolvedSessionKey:
+			typeof threadRoute.resolvedSessionKey === "string"
+				? threadRoute.resolvedSessionKey.trim() || undefined
+				: undefined,
+		targetSessionKey:
+			typeof threadRoute.targetSessionKey === "string"
+				? threadRoute.targetSessionKey.trim() || undefined
+				: undefined,
+		agentId: typeof threadRoute.agentId === "string" ? threadRoute.agentId.trim() || undefined : undefined,
+		label: typeof threadRoute.label === "string" ? threadRoute.label.trim() || undefined : undefined,
+		bindingId:
+			typeof threadRoute.bindingId === "string" ? threadRoute.bindingId.trim() || undefined : undefined,
+		updatedAt:
+			typeof threadRoute.updatedAt === "string" && threadRoute.updatedAt.trim()
+				? threadRoute.updatedAt
+				: message.timestamp,
+	};
+}
+
+function deriveThreadRouteCatalogFromMessageMetadata(message: ChannelMessage): ThreadRouteCatalog | undefined {
+	const cfDoChannel = readCfDoChannelMetadata(message);
+	const threadCatalog =
+		cfDoChannel?.threadCatalog &&
+		typeof cfDoChannel.threadCatalog === "object" &&
+		!Array.isArray(cfDoChannel.threadCatalog)
+			? (cfDoChannel.threadCatalog as Record<string, unknown>)
+			: undefined;
+	if (!threadCatalog || !Array.isArray(threadCatalog.agents)) {
+		return undefined;
+	}
+	const agents: ThreadAgentDescriptor[] = [];
+	for (const entry of threadCatalog.agents) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+			continue;
+		}
+		const candidate = entry as Record<string, unknown>;
+		const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+		if (!id) {
+			continue;
+		}
+		agents.push({
+			id,
+			name: typeof candidate.name === "string" ? candidate.name.trim() || undefined : undefined,
+			workspace:
+				typeof candidate.workspace === "string" ? candidate.workspace.trim() || undefined : undefined,
+			default: candidate.default === true ? true : undefined,
+		});
+	}
+	if (agents.length === 0) {
+		return undefined;
+	}
+	const defaultAgentId =
+		typeof threadCatalog.defaultAgentId === "string"
+			? threadCatalog.defaultAgentId.trim() || undefined
+			: undefined;
+	return {
+		agents,
+		defaultAgentId,
+		updatedAt:
+			typeof threadCatalog.updatedAt === "string" && threadCatalog.updatedAt.trim()
+				? threadCatalog.updatedAt
+				: message.timestamp,
+	};
+}
+
+function readCfDoChannelMetadata(message: ChannelMessage): Record<string, unknown> | undefined {
+	const metadata =
+		message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)
+			? (message.metadata as Record<string, unknown>)
+			: undefined;
+	return metadata?.cfDoChannel && typeof metadata.cfDoChannel === "object" && !Array.isArray(metadata.cfDoChannel)
+		? (metadata.cfDoChannel as Record<string, unknown>)
+		: undefined;
+}
+
+function derivePairingResolutionFromApprovedNotice(
+	approvals: ChannelApprovalState[],
+	conversationId: string,
+	message: ChannelMessage,
+): {
+	approvals: ChannelApprovalState[];
+	syntheticStatus?: ServerStatusEvent;
+} {
+	if (!isPairingApprovedNotice(message)) {
+		return { approvals };
+	}
+	const pendingPairing = approvals.find(
+		(approval) => approval.approvalKind === "pairing" && approval.status === "required",
+	);
+	if (!pendingPairing) {
+		return { approvals };
+	}
+	return {
+		approvals: approvals.map((approval) =>
+			approval.approvalKind === "pairing" && approval.status === "required"
+				? {
+						...approval,
+						status: "resolved",
+						body: message.text,
+						updatedAt: message.timestamp,
+					}
+				: approval,
+		),
+		syntheticStatus: {
+			type: "server.status",
+			conversationId,
+			status: {
+				kind: "approval_resolved",
+				approvalId: pendingPairing.approvalId,
+				approvalKind: "pairing",
+				message: message.text,
+			},
+			timestamp: message.timestamp,
+		},
+	};
+}
+
+function isPairingApprovedNotice(message: ChannelMessage): boolean {
+	if (message.ui?.kind === "notice") {
+		const badge = message.ui.badge?.trim().toLowerCase() ?? "";
+		const title = message.ui.title?.trim().toLowerCase() ?? "";
+		const body = message.ui.body?.trim().toLowerCase() ?? "";
+		if (badge === "approved" && title.includes("pairing")) {
+			return true;
+		}
+		if (title.includes("pairing approved") || body.includes("pairing approved")) {
+			return true;
+		}
+	}
+	return message.text.trim().toLowerCase().includes("openclaw access approved");
 }
 
 export function createChannelClient(options: CreateChannelClientOptions): ChannelClient {

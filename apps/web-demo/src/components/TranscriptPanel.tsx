@@ -1,18 +1,15 @@
 import type { RefObject } from "react";
-import type { ApprovalDecision, ChannelSessionState } from "@pandemicsyn/cf-do-channel-client";
+import type { ChannelSessionState } from "@pandemicsyn/cf-do-channel-client";
 
 import { buildTranscriptEntries, formatTime } from "../demo-state";
-import { ApprovalCard } from "./ApprovalCard";
 
 type TranscriptPanelProps = {
-	state: Pick<ChannelSessionState, "messages" | "pendingSends" | "approvals">;
-	onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
+	state: Pick<ChannelSessionState, "messages" | "pendingSends">;
 	transcriptRef: RefObject<HTMLDivElement | null>;
 };
 
 export function TranscriptPanel(props: TranscriptPanelProps) {
 	const entries = buildTranscriptEntries(props.state);
-	const activeApprovals = props.state.approvals.filter((approval) => approval.status === "required");
 
 	return (
 		<section className="frame transcript-panel">
@@ -47,26 +44,6 @@ export function TranscriptPanel(props: TranscriptPanelProps) {
 						) : null}
 					</article>
 				))}
-			</div>
-
-			<div className="approval-dock">
-				<div className="panel-heading">
-					<h2>Approval Dock</h2>
-					<p>First-class approvals sourced from session state, not scraped from transcript text.</p>
-				</div>
-				{activeApprovals.length === 0 ? (
-					<div className="status-empty">No active approvals.</div>
-				) : (
-					<div className="approval-stack">
-						{activeApprovals.map((approval) => (
-							<ApprovalCard
-								key={approval.approvalId}
-								approval={approval}
-								onResolveApproval={props.onResolveApproval}
-							/>
-						))}
-					</div>
-				)}
 			</div>
 		</section>
 	);

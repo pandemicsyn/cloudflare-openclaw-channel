@@ -1,11 +1,19 @@
 # Local Wrangler secrets for `npx wrangler dev`
-# Copy to `.dev.vars` and replace placeholder values.
+# Copy to `.dev.vars`.
+# These defaults are test-only and match `config/openclaw-cf-do-smoke.json`.
 
 # Required for OpenClaw -> Worker provider auth.
-CHANNEL_SERVICE_TOKEN=replace-with-a-long-random-service-token
+CHANNEL_SERVICE_TOKEN=test-service-token
 
 # Required for client JWT minting and verification.
-CHANNEL_JWT_SECRET=replace-with-a-long-random-jwt-secret
+CHANNEL_JWT_SECRET=test-jwt-secret
 
 # Legacy fallback only. Prefer JWT-based client auth instead.
 # CHANNEL_PUBLIC_TOKEN=replace-with-a-long-random-public-token
+
+# Optional worker-side debug logs (`[cf-do-worker] ...`) during local dev.
+CF_DO_CHANNEL_DEBUG=1
+
+# Optional static identity and credential registries for `/v1/auth/token`.
+CHANNEL_USERS_JSON={"user_123":{"name":"Alice","enabled":true}}
+CHANNEL_CLIENT_CREDENTIALS_JSON={"web-alice":{"secret":"test-secret","sub":"user_123","name":"Alice","enabled":true}}

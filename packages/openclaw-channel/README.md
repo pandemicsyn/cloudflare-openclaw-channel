@@ -16,6 +16,7 @@ The install shape is standard for an OpenClaw channel plugin:
 - outbound delivery from OpenClaw to the Worker
 - typed bridge status events for queued / typing / working / approvals / final
 - first-class approval payloads with interactive button actions
+- first-class thread route inspection and thread/session binding actions
 - account/config resolution
 - simple status probe
 - setup-only entrypoint
@@ -36,6 +37,17 @@ The install shape is standard for an OpenClaw channel plugin:
   }
 }
 ```
+
+Notes:
+
+- Keep `defaultTo` and inbound/outbound targets as canonical conversation ids (for example `demo-room`).
+- Exec approvals are first-class channel payloads; local prompt suppression is limited to approval payloads only so normal tool output still delivers after approval.
+- `conversationId` is the CF DO thread key, not the whole OpenClaw session model.
+- Thread routing is layered on top of the thread key through persisted bindings:
+  - `auto`: follow normal route resolution
+  - `agent`: pin thread to a configured agent
+  - `session`: bind thread to an explicit session key
+- The plugin emits thread route metadata and a configured-agent catalog in `metadata.cfDoChannel` so clients can render route state without scraping transcript text.
 
 ## Build
 

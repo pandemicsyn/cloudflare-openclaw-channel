@@ -10,6 +10,20 @@ It is organized around three deliverables:
 
 The intended shape is SDK-first. Any basic chat UI should be a thin demo on top of the client package, not the primary integration surface.
 
+## Thread Model
+
+This channel now treats the browser-visible `conversationId` as a `Thread ID`.
+
+- `Thread ID`
+  Stable channel thread key. Reusing the same value rejoins the same CF DO conversation stream.
+- `Thread Route`
+  Routing policy layered on top of the thread key. A thread can:
+  - auto-route to the default/configured OpenClaw target
+  - pin to a specific `agentId`
+  - bind to an explicit `sessionKey`
+
+That separation is intentional. A CF DO thread is not itself the OpenClaw runtime session. The plugin stores thread bindings and resolves the effective agent/session for each inbound turn.
+
 ## Overview
 
 The system works like this:
@@ -113,6 +127,8 @@ For deployed environments, set these Worker secrets and vars:
   Optional static credential registry for `POST /v1/auth/token`.
 - `CHANNEL_ID`
   Optional channel id override. Default is `cf-do-channel`.
+- `CF_DO_CHANNEL_DEBUG`
+  Optional debug logging toggle (`1` enables Worker debug logs).
 
 Example static registries:
 
@@ -176,12 +192,26 @@ Useful optional fields:
 
 - `defaultTo`
   Default conversation id for outbound sends when no explicit target is provided.
+  Use the canonical conversation id (for example `demo-room`), not a `cf-do:`-prefixed address.
 - `dmPolicy`
   Typical value is `pairing` for a real DM onboarding flow.
 - `allowFrom`
   DM allowlist entries.
 - `approvalAllowFrom`
   Identities allowed to submit approval actions over the channel.
+
+### Thread Routing Modes
+
+The plugin supports three thread-route modes:
+
+- `auto`
+  Follow the normal OpenClaw route resolution for this thread. This may still land on a configured binding.
+- `agent`
+  Pin the thread to a specific configured agent. The plugin derives the target session key for that agent/thread pair.
+- `session`
+  Bind the thread directly to an explicit OpenClaw session key.
+
+Bindings are persisted under the OpenClaw state directory so the same thread can resume the same target session later.
 
 ### 5. Start OpenClaw
 
@@ -198,6 +228,33 @@ For a full local loop:
 3. Use the demo app or the headless client SDK to connect as a client.
 
 The demo app is optional. The stable integration surface is the SDK in [packages/channel-client](./packages/channel-client).
+
+The demo now exposes:
+
+- `Thread ID`
+  The channel thread key used to reconnect to the same chat stream.
+- `Thread Deck`
+  Recent local threads with labels, last message preview, resolved route summary, and the last few local message snippets per thread.
+- `Thread Route`
+  Route inspection and binding controls backed by first-class `thread.inspect` and `thread.configure` actions.
+
+### Smoke config in repo
+
+The smoke-test OpenClaw config now lives at [config/openclaw-cf-do-smoke.json](./config/openclaw-cf-do-smoke.json).
+
+Run it with:
+
+```bash
+cd ~/projects/openclaw
+OPENCLAW_CONFIG_PATH=~/projects/cloudflare-openclaw-channel/config/openclaw-cf-do-smoke.json pnpm -s openclaw gateway run --allow-unconfigured
+```
+
+Important notes:
+
+- This config uses test-only tokens (`test-service-token`, `test-gateway-token`).
+- Exec approval forwarding is enabled (`approvals.exec.enabled: true`) so approval requests can appear in this channel session.
+- Keep your Worker `.dev.vars` aligned with [\.dev.vars.example](./.dev.vars.example).
+- The plugin path in the smoke config is absolute for this workspace. If your repo path differs, update `plugins.load.paths[0]`.
 
 ## Bridge API
 

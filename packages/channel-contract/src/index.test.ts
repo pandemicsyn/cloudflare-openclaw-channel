@@ -2,14 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import {
 	buildBridgeWebSocketPath,
+	buildChannelAddress,
 	createMessageId,
 	normalizeConversationId,
+	parseConversationIdFromTarget,
 } from "./index.js";
 
 describe("channel-contract", () => {
 	it("normalizes conversation ids", () => {
 		expect(normalizeConversationId(" Demo Room ")).toBe("demo-room");
 		expect(normalizeConversationId("room:alpha_1")).toBe("room:alpha_1");
+	});
+
+	it("parses channel targets into normalized conversation ids", () => {
+		expect(parseConversationIdFromTarget("cf-do:Demo Room")).toBe("demo-room");
+		expect(parseConversationIdFromTarget(" demo-room ")).toBe("demo-room");
+	});
+
+	it("builds canonical channel addresses", () => {
+		expect(buildChannelAddress("Demo Room")).toBe("cf-do:demo-room");
 	});
 
 	it("builds bridge websocket paths without legacy participant ids", () => {
