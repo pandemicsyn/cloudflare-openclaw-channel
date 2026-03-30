@@ -313,6 +313,129 @@ describe("channel-client", () => {
 				],
 			}),
 		]);
+		expect(session.snapshot.statuses.at(-1)).toMatchObject({
+			conversationId: "demo-room",
+			status: {
+				kind: "approval_required",
+				approvalId: "plugin:restricted",
+				approvalKind: "plugin",
+			},
+		});
+	});
+
+	it("derives approval state from structured metadata when ui is omitted", async () => {
+		const holder: { socket?: FakeWebSocket } = {};
+		const client = createChannelClient({
+			baseUrl: "https://example.test",
+			conversationId: "demo-room",
+			auth: {
+				kind: "jwt",
+				token: "jwt-123",
+			},
+			webSocketFactory: (url) => {
+				holder.socket = new FakeWebSocket(url);
+				queueMicrotask(() => holder.socket?.open());
+				return holder.socket as unknown as WebSocket;
+			},
+		});
+		const session = createChannelSession(client);
+
+		await session.connect();
+		holder.socket?.receive({
+			type: "server.message",
+			conversationId: "demo-room",
+			message: {
+				id: "msg_meta_approval",
+				role: "assistant",
+				text: "Approval required.",
+				timestamp: "2026-03-29T19:58:27.000Z",
+				metadata: {
+					execApproval: {
+						approvalId: "e5fc0c19",
+					},
+				},
+			},
+		});
+
+		expect(session.snapshot.approvals).toEqual([
+			expect.objectContaining({
+				approvalId: "e5fc0c19",
+				status: "required",
+				approvalKind: "exec",
+				allowedDecisions: ["allow-once", "allow-always", "deny"],
+			}),
+		]);
+		expect(session.snapshot.statuses.at(-1)).toMatchObject({
+			conversationId: "demo-room",
+			status: {
+				kind: "approval_required",
+				approvalId: "e5fc0c19",
+				approvalKind: "exec",
+			},
+		});
+	});
+
+	it("resolves pairing approvals and appends approval_resolved status from approved notices", async () => {
+		const holder: { socket?: FakeWebSocket } = {};
+		const client = createChannelClient({
+			baseUrl: "https://example.test",
+			conversationId: "demo-room",
+			auth: {
+				kind: "jwt",
+				token: "jwt-123",
+			},
+			webSocketFactory: (url) => {
+				holder.socket = new FakeWebSocket(url);
+				queueMicrotask(() => holder.socket?.open());
+				return holder.socket as unknown as WebSocket;
+			},
+		});
+		const session = createChannelSession(client);
+
+		await session.connect();
+		holder.socket?.receive({
+			type: "server.status",
+			conversationId: "demo-room",
+			status: {
+				kind: "approval_required",
+				approvalId: "user_123",
+				approvalKind: "pairing",
+				message: "Pairing approval is required before this chat can continue.",
+			},
+			timestamp: "2026-03-29T18:40:00.000Z",
+		});
+		holder.socket?.receive({
+			type: "server.message",
+			conversationId: "demo-room",
+			message: {
+				id: "msg_approved",
+				role: "system",
+				text: "✅ OpenClaw access approved. Send a message to start chatting.",
+				timestamp: "2026-03-29T18:40:04.000Z",
+				ui: {
+					kind: "notice",
+					title: "Pairing Approved",
+					body: "You can start chatting in this conversation now.",
+					badge: "approved",
+				},
+			},
+		});
+
+		expect(session.snapshot.approvals).toEqual([
+			expect.objectContaining({
+				approvalId: "user_123",
+				approvalKind: "pairing",
+				status: "resolved",
+			}),
+		]);
+		expect(session.snapshot.statuses.at(-1)).toMatchObject({
+			conversationId: "demo-room",
+			status: {
+				kind: "approval_resolved",
+				approvalId: "user_123",
+				approvalKind: "pairing",
+			},
+		});
 	});
 
 	it("can be constructed through the class directly", () => {

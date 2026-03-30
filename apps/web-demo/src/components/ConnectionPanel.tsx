@@ -16,7 +16,7 @@ export function ConnectionPanel(props: ConnectionPanelProps) {
 		<section className="frame control-panel">
 			<div className="panel-heading">
 				<h2>Signal Input</h2>
-				<p>Credentialed demo access through the Worker token endpoint.</p>
+				<p>Credentialed demo access through the Worker token endpoint. The thread ID is the stable chat key, not the full session model.</p>
 			</div>
 
 			<label className="field">
@@ -28,7 +28,7 @@ export function ConnectionPanel(props: ConnectionPanelProps) {
 				/>
 			</label>
 			<label className="field">
-				<span>Conversation ID</span>
+				<span>Thread ID</span>
 				<input
 					value={props.config.conversationId}
 					onChange={(event) => props.onConfigChange("conversationId", event.target.value)}

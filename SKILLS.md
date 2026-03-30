@@ -38,6 +38,24 @@ That makes it easy for agents and contributors to miss constraints. The skill ke
 - preserve the SDK-first layering
 - keep the demo UI as a reference app, not the product surface
 - treat the OpenClaw plugin as a real native channel, not an HTTP shim
+- keep thread identity separate from OpenClaw agent/session routing
+- keep Worker transport code dumb and push channel semantics into the plugin + SDK layers
+
+## Forking Guidance
+
+This repo is meant to be forked for other channel integrations, not just reused verbatim.
+
+The most important architectural rule to preserve in a fork is:
+
+- channel thread identity is not the same thing as OpenClaw runtime session identity
+
+In this repo that means:
+
+- `conversationId` is the stable thread key on the transport side
+- thread routing decides whether the thread auto-routes, pins to an agent, or binds to a session
+- the Worker stays focused on auth, validation, and bridge transport
+- the native plugin owns pairing, ingress, routing, and binding semantics
+- the client SDK/session layer owns first-class UI state such as approvals, route snapshots, and recent thread state
 
 ## Customizing
 

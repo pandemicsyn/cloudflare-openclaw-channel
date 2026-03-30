@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
 	DEFAULT_ACCOUNT_ID,
 	buildBridgeWebSocketPath,
+	parseConversationIdFromTarget,
 	buildConversationMessagesPath,
 	createMessageId,
 	normalizeConversationId,
@@ -22,7 +23,17 @@ import {
 	issueClientJwtFromCredential,
 } from "./auth.js";
 import type { WorkerEnv } from "./env.js";
-import { badRequest, JsonRequestError, json, readJson } from "./http.js";
+import { badRequest, corsPreflight, JsonRequestError, json, readJson } from "./http.js";
+import {
+	clientEventSchema,
+	issueTokenRequestSchema,
+	outboundRestRequestSchema,
+	outboundStatusRequestSchema,
+	providerEventSchema,
+	type IssueTokenRequest,
+	type OutboundRestRequest,
+	type OutboundStatusRequest,
+} from "./schemas.js";
 
 type SocketAttachment = {
 	role: BridgeSocketRole;
@@ -32,20 +43,6 @@ type SocketAttachment = {
 	userSubject?: string;
 	userName?: string;
 	connectedAt: string;
-};
-
-type OutboundRestRequest = {
-	messageId?: string;
-	role?: "assistant" | "system";
-	text: string;
-	participantId?: string;
-	metadata?: Record<string, unknown>;
-	ui?: ChannelMessage["ui"];
-};
-
-type IssueTokenRequest = {
-	clientId?: string;
-	clientSecret?: string;
 };
 
 function buildServerError(conversationId: string, error: string): ServerEvent {
@@ -87,8 +84,41 @@ function parseBridgeRole(raw: string | null): BridgeSocketRole {
 	return raw === "provider" ? "provider" : "client";
 }
 
+function parseClientConversationId(raw: string | null): string {
+	try {
+		return normalizeConversationId(raw ?? "");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "conversation id is invalid";
+		throw new JsonRequestError(message);
+	}
+}
+
+function normalizeProviderConversationId(raw: string): {
+	conversationId: string;
+	legacyFallbackApplied: boolean;
+} {
+	try {
+		return { conversationId: normalizeConversationId(raw), legacyFallbackApplied: false };
+	} catch {
+		return {
+			conversationId: parseConversationIdFromTarget(raw),
+			legacyFallbackApplied: true,
+		};
+	}
+}
+
 function parseConversationMessageRoute(pathname: string): { conversationId: string } | null {
 	const match = /^\/v1\/conversations\/([^/]+)\/messages$/.exec(pathname);
+	if (!match) {
+		return null;
+	}
+	return {
+		conversationId: normalizeConversationId(decodeURIComponent(match[1])),
+	};
+}
+
+function parseConversationStatusRoute(pathname: string): { conversationId: string } | null {
+	const match = /^\/v1\/conversations\/([^/]+)\/status$/.exec(pathname);
 	if (!match) {
 		return null;
 	}
@@ -105,6 +135,93 @@ function countUniqueConversations(attachments: SocketAttachment[]): number {
 	).size;
 }
 
+function isWorkerDebugEnabled(env: WorkerEnv): boolean {
+	const record = env as Record<string, unknown>;
+	const value = record.CHANNEL_DEBUG ?? record.CF_DO_CHANNEL_DEBUG;
+	return value === "1" || value === "true";
+}
+
+function logWorkerDebug(env: WorkerEnv, event: string, details?: Record<string, unknown>): void {
+	if (!isWorkerDebugEnabled(env)) {
+		return;
+	}
+	const prefix = `[cf-do-worker][${new Date().toISOString()}] ${event}`;
+	if (!details) {
+		console.log(prefix);
+		return;
+	}
+	console.log(prefix, details);
+}
+
+function summarizeServerEvent(event: ServerEvent): Record<string, unknown> {
+	if (event.type === "server.message") {
+		const metadata =
+			event.message.metadata && typeof event.message.metadata === "object"
+				? (event.message.metadata as Record<string, unknown>)
+				: undefined;
+		const channelData =
+			metadata?.channelData && typeof metadata.channelData === "object"
+				? (metadata.channelData as Record<string, unknown>)
+				: undefined;
+		const rawCfDoChannel = (metadata?.cfDoChannel ?? channelData?.cfDoChannel) as unknown;
+		const rawExecApproval = (metadata?.execApproval ?? channelData?.execApproval) as unknown;
+		return {
+			type: event.type,
+			conversationId: event.conversationId,
+			messageId: event.message.id,
+			role: event.message.role,
+			uiKind: event.message.ui?.kind,
+			approvalId:
+				event.message.ui?.kind === "approval"
+					? event.message.ui.approvalId
+					: event.message.ui?.kind === "notice"
+						? undefined
+						: undefined,
+			metadataKeys: metadata ? Object.keys(metadata) : [],
+			channelDataKeys: channelData ? Object.keys(channelData) : [],
+			metadataCfDoUiKind:
+				rawCfDoChannel &&
+				typeof rawCfDoChannel === "object" &&
+				(rawCfDoChannel as { ui?: unknown }).ui &&
+				typeof (rawCfDoChannel as { ui?: unknown }).ui === "object"
+					? ((rawCfDoChannel as { ui?: { kind?: unknown } }).ui?.kind ?? undefined)
+					: undefined,
+			metadataExecApproval:
+				rawExecApproval && typeof rawExecApproval === "object"
+					? {
+							approvalId: (rawExecApproval as { approvalId?: unknown }).approvalId,
+							approvalKind: (rawExecApproval as { approvalKind?: unknown }).approvalKind,
+							allowedDecisions: (rawExecApproval as { allowedDecisions?: unknown }).allowedDecisions,
+						}
+					: undefined,
+			textPreview: event.message.text.slice(0, 180),
+		};
+	}
+	if (event.type === "server.status") {
+		return {
+			type: event.type,
+			conversationId: event.conversationId,
+			kind: event.status.kind,
+			approvalId: event.status.approvalId,
+			approvalKind: event.status.approvalKind,
+			referenceId: event.status.referenceId,
+			message: event.status.message,
+		};
+	}
+	if (event.type === "server.error") {
+		return {
+			type: event.type,
+			conversationId: event.conversationId,
+			error: event.error,
+		};
+	}
+	return {
+		type: event.type,
+		conversationId: event.conversationId,
+		messageId: event.messageId,
+	};
+}
+
 export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 	constructor(ctx: DurableObjectState, env: WorkerEnv) {
 		super(ctx, env);
@@ -119,22 +236,45 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 		if (url.pathname === "/ws") {
 			return this.handleWebSocketUpgrade(request, accountId);
 		}
-		if (url.pathname === "/messages" && request.method === "POST") {
-			const conversationId = normalizeConversationId(url.searchParams.get("conversationId") ?? "");
-			let body: OutboundRestRequest;
-			try {
-				body = await readJson<OutboundRestRequest>(request);
-			} catch (error) {
-				if (error instanceof JsonRequestError) {
-					return badRequest(error.message);
+			if (url.pathname === "/messages" && request.method === "POST") {
+				const conversationId = normalizeConversationId(url.searchParams.get("conversationId") ?? "");
+				let rawBody: unknown;
+				try {
+					rawBody = await readJson<unknown>(request);
+				} catch (error) {
+					if (error instanceof JsonRequestError) {
+						return badRequest(error.message);
+					}
+					throw error;
 				}
-				throw error;
+				const parsedBody = outboundRestRequestSchema.safeParse(rawBody);
+				if (!parsedBody.success) {
+					return badRequest("invalid outbound message payload");
+				}
+				const body = parsedBody.data;
+				return await this.handleRestOutbound(conversationId, body);
 			}
-			return await this.handleRestOutbound(conversationId, body);
-		}
-		if (url.pathname === "/health") {
-			return json(this.buildBridgeStatus(accountId));
-		}
+			if (url.pathname === "/status" && request.method === "POST") {
+				const conversationId = normalizeConversationId(url.searchParams.get("conversationId") ?? "");
+				let rawBody: unknown;
+				try {
+					rawBody = await readJson<unknown>(request);
+				} catch (error) {
+					if (error instanceof JsonRequestError) {
+						return badRequest(error.message);
+					}
+					throw error;
+				}
+				const parsedBody = outboundStatusRequestSchema.safeParse(rawBody);
+				if (!parsedBody.success) {
+					return badRequest("invalid outbound status payload");
+				}
+				const body = parsedBody.data;
+				return await this.handleRestStatus(conversationId, body);
+			}
+			if (url.pathname === "/health") {
+				return json(this.buildBridgeStatus(accountId));
+			}
 
 		return badRequest("route not found", 404);
 	}
@@ -146,9 +286,7 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 		const url = new URL(request.url);
 		const role = parseBridgeRole(url.searchParams.get("role"));
 		const conversationId =
-			role === "client"
-				? normalizeConversationId(url.searchParams.get("conversationId") ?? "")
-				: undefined;
+			role === "client" ? parseClientConversationId(url.searchParams.get("conversationId")) : undefined;
 		const clientId = url.searchParams.get("clientId")?.trim() || undefined;
 		const userSubject = url.searchParams.get("userSub")?.trim() || undefined;
 		const userName = url.searchParams.get("userName")?.trim() || undefined;
@@ -195,27 +333,45 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 		});
 	}
 
-	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-		const attachment = this.readAttachment(ws);
-		const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
-		let envelope: BridgeSocketEnvelope;
-		try {
-			envelope = JSON.parse(raw) as BridgeSocketEnvelope;
-		} catch {
-			ws.send(
-				JSON.stringify(
-					buildServerError(attachment.conversationId ?? "bridge", "invalid json message"),
-				),
-			);
-			return;
-		}
+		async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+			const attachment = this.readAttachment(ws);
+			const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
+			let envelope: unknown;
+			try {
+				envelope = JSON.parse(raw) as BridgeSocketEnvelope;
+			} catch {
+				ws.send(
+					JSON.stringify(
+						buildServerError(attachment.conversationId ?? "bridge", "invalid json message"),
+					),
+				);
+				return;
+			}
 
-		if (attachment.role === "provider") {
-			await this.handleProviderEnvelope(envelope as ProviderEvent, ws, attachment);
-			return;
+			if (attachment.role === "provider") {
+				const parsedProviderEvent = providerEventSchema.safeParse(envelope);
+				if (!parsedProviderEvent.success) {
+					ws.send(
+						JSON.stringify(
+							buildServerError(attachment.conversationId ?? "bridge", "invalid provider event payload"),
+						),
+					);
+					return;
+				}
+				await this.handleProviderEnvelope(parsedProviderEvent.data as ProviderEvent, ws, attachment);
+				return;
+			}
+			const parsedClientEvent = clientEventSchema.safeParse(envelope);
+			if (!parsedClientEvent.success) {
+				ws.send(
+					JSON.stringify(
+						buildServerError(attachment.conversationId ?? "bridge", "invalid client event payload"),
+					),
+				);
+				return;
+			}
+			await this.handleClientEnvelope(parsedClientEvent.data as ClientEvent, ws, attachment);
 		}
-		await this.handleClientEnvelope(envelope as ClientEvent, ws, attachment);
-	}
 
 	private async handleClientEnvelope(
 		envelope: ClientEvent,
@@ -292,7 +448,12 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 				referenceId: actionId,
 				approvalId:
 					envelope.action.type === "approval.resolve" ? envelope.action.approvalId : undefined,
-				message: "Submitting action to OpenClaw.",
+				message:
+					envelope.action.type === "approval.resolve"
+						? "Submitting approval decision to OpenClaw."
+						: envelope.action.type === "thread.inspect"
+							? "Loading thread route."
+							: "Updating thread route.",
 			}),
 		);
 		await this.forwardToProviders({
@@ -317,18 +478,54 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 			return;
 		}
 		if (envelope.type === "provider.status") {
+			const normalized = normalizeProviderConversationId(envelope.conversationId);
+			const conversationId = normalized.conversationId;
+			if (normalized.legacyFallbackApplied) {
+				logWorkerDebug(this.env, "provider.conversationId.legacy_fallback", {
+					accountId: attachment.accountId,
+					rawConversationId: envelope.conversationId,
+					normalizedConversationId: conversationId,
+				});
+			}
+			logWorkerDebug(this.env, "provider.status", {
+				accountId: attachment.accountId,
+				conversationId,
+				originalConversationId: envelope.conversationId,
+				kind: envelope.status.kind,
+				approvalId: envelope.status.approvalId,
+				approvalKind: envelope.status.approvalKind,
+			});
 			await this.broadcastToConversation(
-				envelope.conversationId,
-				buildServerStatus(envelope.conversationId, envelope.status),
+				conversationId,
+				buildServerStatus(conversationId, envelope.status),
 			);
 			return;
 		}
 		if (envelope.type !== "provider.message" || !envelope.message?.text?.trim()) {
 			return;
 		}
-		await this.broadcastToConversation(envelope.conversationId, {
+		const normalized = normalizeProviderConversationId(envelope.conversationId);
+		const conversationId = normalized.conversationId;
+		if (normalized.legacyFallbackApplied) {
+			logWorkerDebug(this.env, "provider.conversationId.legacy_fallback", {
+				accountId: attachment.accountId,
+				rawConversationId: envelope.conversationId,
+				normalizedConversationId: conversationId,
+			});
+		}
+		logWorkerDebug(this.env, "provider.message", {
+			accountId: attachment.accountId,
+			conversationId,
+			originalConversationId: envelope.conversationId,
+			role: envelope.message.role,
+			uiKind: envelope.message.ui?.kind,
+			approvalId:
+				envelope.message.ui?.kind === "approval" ? envelope.message.ui.approvalId : undefined,
+			hasMetadata: Boolean(envelope.message.metadata),
+		});
+		await this.broadcastToConversation(conversationId, {
 			type: "server.message",
-			conversationId: envelope.conversationId,
+			conversationId,
 			message: envelope.message,
 		});
 	}
@@ -359,6 +556,15 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 			message,
 		});
 		return json({ ok: true, message });
+	}
+
+	private async handleRestStatus(
+		conversationId: string,
+		body: OutboundStatusRequest,
+	): Promise<Response> {
+		const statusEvent = buildServerStatus(conversationId, body);
+		await this.broadcastToConversation(conversationId, statusEvent);
+		return json({ ok: true, status: statusEvent });
 	}
 
 	private readAttachment(ws: WebSocket): SocketAttachment {
@@ -430,6 +636,7 @@ export class ChannelBridgeObject extends DurableObject<WorkerEnv> {
 	}
 
 	private async broadcastToConversation(conversationId: string, event: ServerEvent): Promise<void> {
+		logWorkerDebug(this.env, "broadcast.outbound", summarizeServerEvent(event));
 		const payload = JSON.stringify(event);
 		for (const socket of this.ctx.getWebSockets(`conversation:${conversationId}`)) {
 			try {
@@ -461,6 +668,9 @@ function buildAuthConfigSummary(env: WorkerEnv) {
 export default {
 	async fetch(request: Request, env: WorkerEnv): Promise<Response> {
 		const url = new URL(request.url);
+		if (request.method === "OPTIONS" && url.pathname.startsWith("/v1/")) {
+			return corsPreflight();
+		}
 		if (url.pathname === "/health") {
 			return json({
 				ok: true,
@@ -495,18 +705,23 @@ export default {
 			});
 		}
 
-		if (url.pathname === "/v1/auth/token" && request.method === "POST") {
-			let body: IssueTokenRequest;
-			try {
-				body = await readJson<IssueTokenRequest>(request);
-			} catch (error) {
-				if (error instanceof JsonRequestError) {
-					return badRequest(error.message);
+			if (url.pathname === "/v1/auth/token" && request.method === "POST") {
+				let rawBody: unknown;
+				try {
+					rawBody = await readJson<unknown>(request);
+				} catch (error) {
+					if (error instanceof JsonRequestError) {
+						return badRequest(error.message);
+					}
+					throw error;
 				}
-				throw error;
-			}
-			const credentialId = body.clientId?.trim();
-			const credentialSecret = body.clientSecret?.trim();
+				const parsedBody = issueTokenRequestSchema.safeParse(rawBody);
+				if (!parsedBody.success) {
+					return badRequest("clientId and clientSecret are required");
+				}
+				const body: IssueTokenRequest = parsedBody.data;
+				const credentialId = body.clientId?.trim();
+				const credentialSecret = body.clientSecret?.trim();
 			if (!credentialId || !credentialSecret) {
 				return badRequest("clientId and clientSecret are required");
 			}
@@ -532,6 +747,9 @@ export default {
 		if (url.pathname === "/v1/bridge/ws") {
 			try {
 				const role = parseBridgeRole(url.searchParams.get("role"));
+				if (role === "client") {
+					parseClientConversationId(url.searchParams.get("conversationId"));
+				}
 				const accountId =
 					(url.searchParams.get("accountId") ?? DEFAULT_ACCOUNT_ID).trim() || DEFAULT_ACCOUNT_ID;
 				if (role === "provider") {
@@ -563,6 +781,9 @@ export default {
 					}),
 				);
 			} catch (error) {
+				if (error instanceof JsonRequestError) {
+					return badRequest(error.message);
+				}
 				if (error instanceof Error) {
 					return badRequest(error.message || "unauthorized", 401);
 				}
@@ -570,8 +791,8 @@ export default {
 			}
 		}
 
-		const conversationRoute = parseConversationMessageRoute(url.pathname);
-		if (conversationRoute) {
+			const conversationRoute = parseConversationMessageRoute(url.pathname);
+			if (conversationRoute) {
 			if (!authorizeServiceRequest(request, env)) {
 				return badRequest("unauthorized", 401);
 			}
@@ -593,9 +814,35 @@ export default {
 								: request.body,
 					},
 				),
-			);
-		}
+				);
+			}
 
-		return badRequest("route not found", 404);
-	},
-} satisfies ExportedHandler<WorkerEnv>;
+			const statusRoute = parseConversationStatusRoute(url.pathname);
+			if (statusRoute) {
+				if (!authorizeServiceRequest(request, env)) {
+					return badRequest("unauthorized", 401);
+				}
+				const accountId =
+					(url.searchParams.get("accountId") ?? DEFAULT_ACCOUNT_ID).trim() || DEFAULT_ACCOUNT_ID;
+				const stub = getBridgeStub(env, accountId);
+				return await stub.fetch(
+					new Request(
+						new URL(
+							`/status?accountId=${encodeURIComponent(accountId)}&conversationId=${encodeURIComponent(statusRoute.conversationId)}`,
+							request.url,
+						),
+						{
+							method: request.method,
+							headers: request.headers,
+							body:
+								request.method === "GET" || request.method === "HEAD"
+									? undefined
+									: request.body,
+						},
+					),
+				);
+			}
+
+			return badRequest("route not found", 404);
+		},
+	} satisfies ExportedHandler<WorkerEnv>;

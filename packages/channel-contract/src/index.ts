@@ -2,10 +2,13 @@ export const DEFAULT_CHANNEL_ID = "cf-do-channel";
 export const DEFAULT_OPENCLAW_MODEL = "openclaw/default";
 export const DEFAULT_OPENCLAW_RESPONSES_PATH = "/v1/responses";
 export const DEFAULT_ACCOUNT_ID = "default";
+export const CHANNEL_ADDRESS_PREFIX = "cf-do:";
 
 export type ChannelRole = "user" | "assistant" | "system";
 export type BridgeSocketRole = "client" | "provider";
 export type ApprovalDecision = "allow-once" | "allow-always" | "deny";
+export type ThreadRouteMode = "auto" | "agent" | "session";
+export type ThreadRouteSource = "default" | "configured" | "binding";
 export type ChannelStatusKind =
 	| "queued"
 	| "typing"
@@ -62,6 +65,32 @@ export type ChannelUi =
 			fields: ChannelUiFormField[];
 	  };
 
+export type ThreadRouteState = {
+	conversationId: string;
+	mode: ThreadRouteMode;
+	source: ThreadRouteSource;
+	resolvedAgentId?: string;
+	resolvedSessionKey?: string;
+	targetSessionKey?: string;
+	agentId?: string;
+	label?: string;
+	bindingId?: string;
+	updatedAt: string;
+};
+
+export type ThreadAgentDescriptor = {
+	id: string;
+	name?: string;
+	workspace?: string;
+	default?: boolean;
+};
+
+export type ThreadRouteCatalog = {
+	agents: ThreadAgentDescriptor[];
+	defaultAgentId?: string;
+	updatedAt: string;
+};
+
 export type ChannelMessage = {
 	id: string;
 	role: ChannelRole;
@@ -96,6 +125,16 @@ export type ClientActionEvent = {
 				type: "approval.resolve";
 				approvalId: string;
 				decision: ApprovalDecision;
+		  }
+		| {
+				type: "thread.configure";
+				mode: ThreadRouteMode;
+				agentId?: string;
+				sessionKey?: string;
+				label?: string;
+		  }
+		| {
+				type: "thread.inspect";
 		  };
 	metadata?: Record<string, unknown>;
 };
@@ -211,6 +250,18 @@ export function normalizeConversationId(raw: string): string {
 	return normalized.slice(0, 120);
 }
 
+export function parseConversationIdFromTarget(raw: string): string {
+	const trimmed = raw.trim();
+	const conversationId = trimmed.startsWith(CHANNEL_ADDRESS_PREFIX)
+		? trimmed.slice(CHANNEL_ADDRESS_PREFIX.length)
+		: trimmed;
+	return normalizeConversationId(conversationId);
+}
+
+export function buildChannelAddress(conversationId: string): string {
+	return `${CHANNEL_ADDRESS_PREFIX}${normalizeConversationId(conversationId)}`;
+}
+
 export function buildConversationWebSocketPath(conversationId: string): string {
 	return `/v1/conversations/${encodeURIComponent(normalizeConversationId(conversationId))}/ws`;
 }
@@ -221,6 +272,10 @@ export function buildConversationEventsPath(conversationId: string): string {
 
 export function buildConversationMessagesPath(conversationId: string): string {
 	return `/v1/conversations/${encodeURIComponent(normalizeConversationId(conversationId))}/messages`;
+}
+
+export function buildConversationStatusPath(conversationId: string): string {
+	return `/v1/conversations/${encodeURIComponent(normalizeConversationId(conversationId))}/status`;
 }
 
 export function buildBridgeWebSocketPath(params?: {
