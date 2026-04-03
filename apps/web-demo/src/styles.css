@@ -243,9 +243,9 @@ textarea {
 	color: var(--cyan);
 }
 
-.field input,
+.field [data-slot="input"],
 .field select,
-.composer textarea {
+.composer [data-slot="textarea"] {
 	width: 100%;
 	padding: 12px 14px;
 	background: rgba(2, 8, 22, 0.9);
@@ -255,9 +255,9 @@ textarea {
 	box-shadow: inset 0 0 18px rgba(88, 240, 255, 0.05);
 }
 
-.field input:focus,
+.field [data-slot="input"]:focus,
 .field select:focus,
-.composer textarea:focus {
+.composer [data-slot="textarea"]:focus {
 	border-color: rgba(255, 79, 216, 0.45);
 	box-shadow:
 		inset 0 0 18px rgba(88, 240, 255, 0.08),
@@ -411,7 +411,7 @@ textarea {
 	padding: 20px;
 }
 
-.composer textarea {
+.composer [data-slot="textarea"] {
 	min-height: 120px;
 	resize: vertical;
 }

@@ -36,5 +36,8 @@
 	},
 	"dependencies": {
 		"@pandemicsyn/cf-do-channel-contract": "workspace:*"
+	},
+	"devDependencies": {
+		"openclaw": "^2026.3.24"
 	}
 }

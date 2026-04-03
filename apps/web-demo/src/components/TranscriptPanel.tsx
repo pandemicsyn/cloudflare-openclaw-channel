@@ -1,6 +1,9 @@
 import type { RefObject } from "react";
 import type { ChannelSessionState } from "@pandemicsyn/cf-do-channel-client";
 
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { buildTranscriptEntries, formatTime } from "../demo-state";
 
 type TranscriptPanelProps = {
@@ -12,13 +15,14 @@ export function TranscriptPanel(props: TranscriptPanelProps) {
 	const entries = buildTranscriptEntries(props.state);
 
 	return (
-		<section className="frame transcript-panel">
-			<div className="panel-heading">
-				<h2>Live Transcript</h2>
-				<p>Messages, pending sends, and approval prompts driven directly from the SDK session.</p>
-			</div>
-
-			<div className="transcript" ref={props.transcriptRef}>
+		<Card className="frame transcript-panel">
+			<CardHeader className="panel-heading">
+				<CardTitle>Live Transcript</CardTitle>
+				<CardDescription>Messages, pending sends, and approval prompts driven directly from the SDK session.</CardDescription>
+			</CardHeader>
+			<CardContent>
+			<ScrollArea className="transcript">
+				<div ref={props.transcriptRef}>
 				{entries.length === 0 ? (
 					<div className="empty-state">
 						<div className="empty-grid" />
@@ -40,11 +44,13 @@ export function TranscriptPanel(props: TranscriptPanelProps) {
 							<div className="message-error">{entry.error}</div>
 						) : null}
 						{entry.kind === "message" && entry.ui?.kind === "notice" ? (
-							<div className="notice-chip">{entry.ui.title}</div>
+							<Badge className="notice-chip" variant="outline">{entry.ui.title}</Badge>
 						) : null}
 					</article>
 				))}
-			</div>
-		</section>
+				</div>
+			</ScrollArea>
+			</CardContent>
+		</Card>
 	);
 }

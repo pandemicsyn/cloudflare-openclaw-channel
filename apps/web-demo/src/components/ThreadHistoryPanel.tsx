@@ -1,3 +1,6 @@
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ThreadHistoryEntry } from "../demo-state";
 
 type ThreadHistoryPanelProps = {
@@ -10,11 +13,12 @@ type ThreadHistoryPanelProps = {
 
 export function ThreadHistoryPanel(props: ThreadHistoryPanelProps) {
 	return (
-		<section className="frame thread-history-panel">
-			<div className="panel-heading">
-				<h2>Thread Deck</h2>
-				<p>Recent thread keys, labels, and resolved routes stored locally in the demo client.</p>
-			</div>
+		<Card className="frame thread-history-panel">
+			<CardHeader className="panel-heading">
+				<CardTitle>Thread Deck</CardTitle>
+				<CardDescription>Recent thread keys, labels, and resolved routes stored locally in the demo client.</CardDescription>
+			</CardHeader>
+			<CardContent>
 
 			{props.history.length === 0 ? (
 				<div className="thread-history-empty">No recent threads yet. Connect and talk in a few threads to build a deck.</div>
@@ -32,9 +36,9 @@ export function ThreadHistoryPanel(props: ThreadHistoryPanelProps) {
 										<strong>{entry.label ?? entry.conversationId}</strong>
 										<code>{entry.conversationId}</code>
 									</div>
-									<span className={`route-badge route-badge-${entry.routeSource ?? "idle"}`}>
+									<Badge className={`route-badge route-badge-${entry.routeSource ?? "idle"}`} variant="outline">
 										{entry.routeMode ?? "thread"}
-									</span>
+									</Badge>
 								</div>
 								<div className="thread-history-meta">
 									<span>{entry.resolvedAgentId ? `agent ${entry.resolvedAgentId}` : "agent not resolved"}</span>
@@ -57,27 +61,30 @@ export function ThreadHistoryPanel(props: ThreadHistoryPanelProps) {
 									</div>
 								) : null}
 								<div className="button-row">
-									<button
+									<Button
 										type="button"
+										variant="outline"
 										className="btn btn-secondary"
 										onClick={() => props.onOpenThread(entry.conversationId)}
 									>
 										{isActive && props.isConnected ? "Reconnect" : "Open Thread"}
-									</button>
-									<button
+									</Button>
+									<Button
 										type="button"
+										variant="outline"
 										className="btn btn-secondary"
 										onClick={() => props.onForgetThread(entry.conversationId)}
 									>
 										Forget
-									</button>
+									</Button>
 								</div>
 							</article>
 						);
 					})}
 				</div>
 			)}
-		</section>
+			</CardContent>
+		</Card>
 	);
 }
 

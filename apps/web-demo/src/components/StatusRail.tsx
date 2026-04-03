@@ -1,5 +1,7 @@
 import type { ChannelSessionState } from "@pandemicsyn/cf-do-channel-client";
 
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatTime, statusTone } from "../demo-state";
 
 type StatusRailProps = {
@@ -8,12 +10,12 @@ type StatusRailProps = {
 
 export function StatusRail(props: StatusRailProps) {
 	return (
-		<aside className="frame status-panel">
-			<div className="panel-heading">
-				<h2>Status Rail</h2>
-				<p>Transport-level events from the bridge, not presentation guesses.</p>
-			</div>
-
+		<Card className="frame status-panel">
+			<CardHeader className="panel-heading">
+				<CardTitle>Status Rail</CardTitle>
+				<CardDescription>Transport-level events from the bridge, not presentation guesses.</CardDescription>
+			</CardHeader>
+			<CardContent>
 			<div className="status-stack">
 				{props.statuses.length === 0 ? (
 					<div className="status-empty">No status pulses yet.</div>
@@ -27,7 +29,7 @@ export function StatusRail(props: StatusRailProps) {
 								className={`status-chip tone-${statusTone(status.status.kind)}`}
 							>
 								<div className="status-line">
-									<span>{status.status.kind.replaceAll("_", " ")}</span>
+									<Badge variant="outline">{status.status.kind.replaceAll("_", " ")}</Badge>
 									<span>{formatTime(status.timestamp)}</span>
 								</div>
 								{status.status.message ? <p>{status.status.message}</p> : null}
@@ -36,6 +38,7 @@ export function StatusRail(props: StatusRailProps) {
 						))
 				)}
 			</div>
-		</aside>
+			</CardContent>
+		</Card>
 	);
 }
