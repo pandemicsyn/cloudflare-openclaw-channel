@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ConnectionFormState } from "../demo-state";
 
 type ThreadRoutePanelProps = {
@@ -94,14 +95,19 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 
 			<label className="field">
 				<span>Route mode</span>
-				<select
+				<Select
 					value={config.threadRouteMode}
-					onChange={(event) => props.onConfigChange("threadRouteMode", event.target.value)}
+					onValueChange={(value) => props.onConfigChange("threadRouteMode", value)}
 				>
-					<option value="auto">Auto route</option>
-					<option value="agent">Pin agent</option>
-					<option value="session">Bind session</option>
-				</select>
+					<SelectTrigger className="w-full">
+						<SelectValue placeholder="Select route mode" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="auto">Auto route</SelectItem>
+						<SelectItem value="agent">Pin agent</SelectItem>
+						<SelectItem value="session">Bind session</SelectItem>
+					</SelectContent>
+				</Select>
 			</label>
 
 			{showAgentField ? (

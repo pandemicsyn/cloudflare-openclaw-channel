@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ApprovalDock } from "./components/ApprovalDock";
 import { Composer } from "./components/Composer";
 import { ConnectionPanel } from "./components/ConnectionPanel";
@@ -25,7 +27,8 @@ export default function App() {
 			<div className="backdrop-grid" />
 			<div className="glow glow-cyan" />
 			<div className="glow glow-pink" />
-				<header className="hero-panel frame">
+			<Card className="hero-panel frame">
+				<CardHeader>
 					<div>
 						<p className="eyebrow">Cloudflare Durable Object Channel</p>
 						<h1>Neon bridge operator console</h1>
@@ -35,23 +38,30 @@ export default function App() {
 						</p>
 						{demo.debugEnabled ? <p className="hero-copy">Debug logging enabled (`cfDebug=1`).</p> : null}
 					</div>
-				<div className="hero-metrics">
-					<div className="metric-card">
-						<span className="metric-label">Link state</span>
-						<span className={`metric-value state-${demo.sessionState.connection.connection}`}>
-							{demo.sessionState.connection.connection}
-						</span>
-					</div>
-					<div className="metric-card">
-						<span className="metric-label">Thread</span>
-						<span className="metric-value">{demo.config.conversationId}</span>
-					</div>
-					<div className="metric-card">
-						<span className="metric-label">Route</span>
-						<span className="metric-value">{demo.sessionState.threadRoute?.mode ?? "auto"}</span>
-					</div>
-				</div>
-			</header>
+				</CardHeader>
+				<CardContent className="hero-metrics">
+					<Card className="metric-card">
+						<CardContent>
+							<span className="metric-label">Link state</span>
+							<Badge className={`metric-value state-${demo.sessionState.connection.connection}`} variant="outline">
+								{demo.sessionState.connection.connection}
+							</Badge>
+						</CardContent>
+					</Card>
+					<Card className="metric-card">
+						<CardContent>
+							<span className="metric-label">Thread</span>
+							<Badge className="metric-value" variant="outline">{demo.config.conversationId}</Badge>
+						</CardContent>
+					</Card>
+					<Card className="metric-card">
+						<CardContent>
+							<span className="metric-label">Route</span>
+							<Badge className="metric-value" variant="outline">{demo.sessionState.threadRoute?.mode ?? "auto"}</Badge>
+						</CardContent>
+					</Card>
+				</CardContent>
+			</Card>
 
 			<main className="dashboard-grid">
 				<div className="control-column">
