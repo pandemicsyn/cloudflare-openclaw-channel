@@ -101,7 +101,7 @@ The only non-standard part is that this channel depends on a Cloudflare Worker +
 
 ```bash
 pnpm install
-npm run typecheck
+pnpm typecheck
 pnpm build
 ```
 
@@ -111,8 +111,8 @@ For local development with Wrangler:
 
 ```bash
 cp .dev.vars.example .dev.vars
-npm run cf-typegen
-npm run dev
+pnpm cf-typegen
+pnpm dev
 ```
 
 For deployed environments, set these Worker secrets and vars:
@@ -152,11 +152,11 @@ Example static registries:
 For production deploy:
 
 ```bash
-npm run cf-typegen
-npm run deploy
+pnpm cf-typegen
+pnpm deploy
 ```
 
-Run `npm run cf-typegen` again after changing bindings in [wrangler.jsonc](./wrangler.jsonc).
+Run `pnpm cf-typegen` again after changing bindings in [wrangler.jsonc](./wrangler.jsonc).
 
 ### 3. Install the OpenClaw plugin
 
@@ -223,7 +223,7 @@ At runtime, OpenClaw keeps a persistent provider WebSocket open to the Worker br
 
 For a full local loop:
 
-1. Run the Worker locally with `npm run dev`.
+1. Run the Worker locally with `pnpm dev`.
 2. Start OpenClaw with the plugin enabled and `baseUrl` pointing at the local Worker.
 3. Use the demo app or the headless client SDK to connect as a client.
 
@@ -288,7 +288,7 @@ This repo is now wired as a pnpm workspace.
 Useful commands:
 
 ```bash
-npm run typecheck
+pnpm typecheck
 pnpm build
 pnpm test
 ```
