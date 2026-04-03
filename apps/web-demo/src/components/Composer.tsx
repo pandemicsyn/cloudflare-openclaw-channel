@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import {
 	analyzeCommandInput,
 	buildCommandUsage,
@@ -83,13 +87,14 @@ export function Composer(props: ComposerProps) {
 	};
 
 	return (
-		<div className="composer frame">
-			<div className="panel-heading">
-				<h2>Composer</h2>
-				<p>Send through the session helper so pending and ack state stay consistent.</p>
-			</div>
+		<Card className="composer frame">
+			<CardHeader className="panel-heading">
+				<CardTitle>Composer</CardTitle>
+				<CardDescription>Send through the session helper so pending and ack state stay consistent.</CardDescription>
+			</CardHeader>
+			<CardContent>
 			<div className="composer-shell">
-				<textarea
+				<Textarea
 					value={props.draft}
 					onChange={(event) => props.onDraftChange(event.target.value)}
 					onKeyDown={handleKeyDown}
@@ -126,7 +131,7 @@ export function Composer(props: ComposerProps) {
 										>
 											<div className="command-option-header">
 												<code>{`/${command.name}`}</code>
-												<span className="command-badge">{formatCategory(command.category)}</span>
+												<Badge className="command-badge" variant="outline">{formatCategory(command.category)}</Badge>
 											</div>
 											<p>{command.description}</p>
 											<div className="command-option-meta">
@@ -142,12 +147,12 @@ export function Composer(props: ComposerProps) {
 								<p className="command-description">{activeCommand.description}</p>
 								<code className="command-usage">{buildCommandUsage(activeCommand)}</code>
 								<div className="command-meta-row">
-									<span className="command-badge">{formatCategory(activeCommand.category)}</span>
-									<span className="command-badge command-badge-muted">{formatScope(activeCommand.scope)}</span>
+									<Badge className="command-badge" variant="outline">{formatCategory(activeCommand.category)}</Badge>
+									<Badge className="command-badge command-badge-muted" variant="secondary">{formatScope(activeCommand.scope)}</Badge>
 									{activeCommand.aliases?.map((alias) => (
-										<span key={alias} className="command-badge command-badge-muted">
+										<Badge key={alias} className="command-badge command-badge-muted" variant="secondary">
 											{alias}
-										</span>
+										</Badge>
 									))}
 								</div>
 								{nextArgument ? (
@@ -160,14 +165,15 @@ export function Composer(props: ComposerProps) {
 										{nextArgument.choices && nextArgument.choices.length > 0 ? (
 											<div className="command-choice-row">
 												{nextArgument.choices.map((choice) => (
-													<button
+													<Button
 														key={choice.value}
 														type="button"
+														variant="outline"
 														className="command-choice"
 														onClick={() => appendChoice(choice)}
 													>
 														{choice.label ?? choice.value}
-													</button>
+													</Button>
 												))}
 											</div>
 										) : null}
@@ -181,12 +187,13 @@ export function Composer(props: ComposerProps) {
 				) : null}
 			</div>
 			<div className="button-row composer-actions">
-				<button className="btn btn-primary" onClick={props.onSend} disabled={!props.isConnected}>
+				<Button className="btn btn-primary" onClick={props.onSend} disabled={!props.isConnected}>
 					Transmit
-				</button>
+				</Button>
 				<span className="composer-shortcut">Cmd/Ctrl+Enter to transmit</span>
 			</div>
-		</div>
+			</CardContent>
+		</Card>
 	);
 }
 

@@ -4,6 +4,7 @@ import path from "node:path";
 export default defineConfig({
 	resolve: {
 		alias: {
+			"@": path.resolve(__dirname, "./apps/web-demo/src"),
 			"@pandemicsyn/cf-do-channel-client": path.resolve(
 				__dirname,
 				"./packages/channel-client/src/index.ts",

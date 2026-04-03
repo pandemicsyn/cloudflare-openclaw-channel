@@ -1,5 +1,8 @@
 import type { ApprovalDecision, ChannelApprovalState } from "@pandemicsyn/cf-do-channel-client";
 
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+
 type ApprovalCardProps = {
 	approval: ChannelApprovalState;
 	onResolveApproval: (approvalId: string, decision: ApprovalDecision) => void;
@@ -37,7 +40,8 @@ export function ApprovalCard(props: ApprovalCardProps) {
 				: buildDecisionActions(props.approval.allowedDecisions);
 
 	return (
-		<div className="approval-card">
+		<Card className="approval-card">
+			<CardContent>
 			<div className="approval-copy">
 				<strong>{props.approval.title ?? "Approval Required"}</strong>
 				<span>{props.approval.body ?? "OpenClaw requires an approval decision."}</span>
@@ -55,16 +59,18 @@ export function ApprovalCard(props: ApprovalCardProps) {
 			) : null}
 			<div className="button-row">
 				{actions.map((item) => (
-					<button
+					<Button
 						key={`${props.approval.approvalId}:${item.id}`}
+						variant={item.style === "danger" ? "destructive" : item.style === "success" ? "secondary" : "default"}
 						className={`btn btn-${item.style}`}
 						onClick={() => props.onResolveApproval(props.approval.approvalId, item.decision)}
 					>
 						{item.label}
-					</button>
+					</Button>
 				))}
 			</div>
-		</div>
+			</CardContent>
+		</Card>
 	);
 }
 

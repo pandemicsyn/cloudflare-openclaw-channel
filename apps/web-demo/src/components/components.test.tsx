@@ -320,6 +320,14 @@ describe("web demo components", () => {
 		expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("/reasoning stream ");
 	});
 
+	it("renders shadcn composer shell with badges and transmit action", () => {
+		renderComposerHarness("/status");
+
+		expect(screen.getByText("Composer")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Transmit" })).toBeTruthy();
+		expect(screen.getByText("text + native")).toBeTruthy();
+	});
+
 	it("sends from the composer with cmd or ctrl enter", () => {
 		const onSend = vi.fn();
 		renderComposerHarness("/status", { onSend });

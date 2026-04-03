@@ -1,5 +1,9 @@
 import type { ThreadRouteCatalog, ThreadRouteState } from "@pandemicsyn/cf-do-channel-client";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import type { ConnectionFormState } from "../demo-state";
 
 type ThreadRoutePanelProps = {
@@ -35,16 +39,17 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 	const suggestedAgents = threadCatalog?.agents ?? [];
 
 	return (
-		<section className="frame route-panel">
-			<div className="panel-heading route-panel-heading">
+		<Card className="frame route-panel">
+			<CardHeader className="panel-heading route-panel-heading">
 				<div>
-					<h2>Thread Route</h2>
-					<p>Keep the thread key stable, then decide whether this thread auto-routes, pins to an agent, or binds to a specific session.</p>
+					<CardTitle>Thread Route</CardTitle>
+					<CardDescription>Keep the thread key stable, then decide whether this thread auto-routes, pins to an agent, or binds to a specific session.</CardDescription>
 				</div>
-				<span className={`route-badge route-badge-${threadRoute?.source ?? "idle"}`}>
+				<Badge className={`route-badge route-badge-${threadRoute?.source ?? "idle"}`} variant="outline">
 					{threadRoute?.source ?? "unknown"}
-				</span>
-			</div>
+				</Badge>
+			</CardHeader>
+			<CardContent>
 
 			<div className="route-summary-card">
 				<strong>{summarizeRoute(threadRoute)}</strong>
@@ -68,9 +73,10 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 					</div>
 					<div className="route-chip-grid">
 						{suggestedAgents.map((agent) => (
-							<button
+							<Button
 								key={agent.id}
 								type="button"
+								variant="outline"
 								className={`route-chip ${config.agentId === agent.id ? "route-chip-active" : ""}`}
 								onClick={() => {
 									props.onConfigChange("threadRouteMode", "agent");
@@ -80,7 +86,7 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 							>
 								<span>{agent.name ?? agent.id}</span>
 								<small>{agent.default ? "default" : agent.id}</small>
-							</button>
+							</Button>
 						))}
 					</div>
 				</div>
@@ -101,7 +107,7 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 			{showAgentField ? (
 				<label className="field">
 					<span>Agent ID</span>
-					<input
+					<Input
 						list="thread-route-agent-options"
 						value={config.agentId}
 						onChange={(event) => props.onConfigChange("agentId", event.target.value)}
@@ -120,7 +126,7 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 			{showSessionField ? (
 				<label className="field">
 					<span>Session key</span>
-					<input
+					<Input
 						value={config.sessionKey}
 						onChange={(event) => props.onConfigChange("sessionKey", event.target.value)}
 						placeholder="agent:codex:cf-do-channel:default:demo-room4"
@@ -130,7 +136,7 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 
 			<label className="field">
 				<span>Thread label</span>
-				<input
+				<Input
 					value={config.threadLabel}
 					onChange={(event) => props.onConfigChange("threadLabel", event.target.value)}
 					placeholder="optional routing note"
@@ -138,13 +144,14 @@ export function ThreadRoutePanel(props: ThreadRoutePanelProps) {
 			</label>
 
 			<div className="button-row">
-				<button className="btn btn-primary" disabled={!props.isConnected} onClick={props.onApply}>
+				<Button className="btn btn-primary" disabled={!props.isConnected} onClick={props.onApply}>
 					Apply Route
-				</button>
-				<button className="btn btn-secondary" disabled={!props.isConnected} onClick={props.onRefresh}>
+				</Button>
+				<Button variant="outline" className="btn btn-secondary" disabled={!props.isConnected} onClick={props.onRefresh}>
 					Refresh
-				</button>
+				</Button>
 			</div>
-		</section>
+			</CardContent>
+		</Card>
 	);
 }
