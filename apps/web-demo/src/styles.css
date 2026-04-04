@@ -184,6 +184,14 @@ textarea {
 	text-transform: uppercase;
 }
 
+.metric-pill {
+	display: inline-flex;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .state-connected {
 	color: var(--lime);
 }
