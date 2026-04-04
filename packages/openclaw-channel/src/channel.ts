@@ -19,6 +19,7 @@ import {
 } from "./bridge-manager.js";
 import { createApprovalCapability } from "./approval-capability.js";
 import { resolveApprovalAllowFrom } from "./approval-auth.js";
+import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
 import { readSenderBinding } from "./binding-store.js";
 import { clearThreadBindingAdapter, ensureThreadBindingAdapter } from "./thread-bindings.js";
 
@@ -399,6 +400,19 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			},
 		},
 		approvals: createApprovalCapability({
+			resolveApprovalTargets: ({ conversationId, senderId, cfg }) => {
+				const allowFrom = resolveApprovalAllowFrom(cfg, (source) =>
+					readStringList(resolveSection(source), "approvalAllowFrom"),
+				);
+				return {
+					origin: resolveOriginApprovalTarget({ conversationId, senderId, approvalAllowFrom: allowFrom }),
+					approvers: resolveApproverApprovalTargets({
+						conversationId,
+						senderId,
+						approvalAllowFrom: allowFrom,
+					}),
+				};
+			},
 			resolveApprovalAllowFrom: (cfg) =>
 				resolveApprovalAllowFrom(cfg, (source) => readStringList(resolveSection(source), "approvalAllowFrom")),
 			buildExecApprovalPendingText,

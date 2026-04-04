@@ -4,6 +4,14 @@ import type { ApprovalDecision, ChannelUi } from "../../channel-contract/src/ind
 
 type ApprovalCapabilityDeps = {
 	resolveApprovalAllowFrom: (cfg: OpenClawConfig) => string[];
+	resolveApprovalTargets?: (params: {
+		conversationId: string;
+		senderId?: string;
+		cfg: OpenClawConfig;
+	}) => {
+		origin: unknown;
+		approvers: unknown[];
+	};
 	buildExecApprovalPendingText: (request: Record<string, unknown>) => string;
 	buildExecApprovalResolvedText: (resolved: { decision?: string; resolvedBy?: string }) => string;
 	buildApprovalUi: (params: {
@@ -20,7 +28,16 @@ export function createApprovalCapability(deps: ApprovalCapabilityDeps) {
 		delivery: {
 			hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) =>
 				deps.resolveApprovalAllowFrom(cfg).length > 0,
-			shouldSuppressForwardingFallback: () => false,
+			shouldSuppressForwardingFallback: ({ cfg, request }: { cfg: OpenClawConfig; target: any; request: any }) => {
+				if (deps.resolveApprovalTargets) {
+					void deps.resolveApprovalTargets({
+						conversationId: request?.conversationId ?? "unknown",
+						senderId: request?.requestedBy,
+						cfg,
+					});
+				}
+				return false;
+			},
 		},
 		render: {
 			exec: {
