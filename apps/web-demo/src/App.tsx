@@ -40,26 +40,20 @@ export default function App() {
 					</div>
 				</CardHeader>
 				<CardContent className="hero-metrics">
-					<Card className="metric-card">
-						<CardContent>
-							<span className="metric-label">Link state</span>
-							<Badge className={`metric-value state-${demo.sessionState.connection.connection}`} variant="outline">
-								{demo.sessionState.connection.connection}
-							</Badge>
-						</CardContent>
-					</Card>
-					<Card className="metric-card">
-						<CardContent>
-							<span className="metric-label">Thread</span>
-							<Badge className="metric-value" variant="outline">{demo.config.conversationId}</Badge>
-						</CardContent>
-					</Card>
-					<Card className="metric-card">
-						<CardContent>
-							<span className="metric-label">Route</span>
-							<Badge className="metric-value" variant="outline">{demo.sessionState.threadRoute?.mode ?? "auto"}</Badge>
-						</CardContent>
-					</Card>
+					<div className="metric-card">
+						<span className="metric-label">Link state</span>
+						<Badge className={`metric-value metric-pill state-${demo.sessionState.connection.connection}`} variant="outline">
+							{demo.sessionState.connection.connection}
+						</Badge>
+					</div>
+					<div className="metric-card">
+						<span className="metric-label">Thread</span>
+						<Badge className="metric-value metric-pill" variant="outline">{demo.config.conversationId}</Badge>
+					</div>
+					<div className="metric-card">
+						<span className="metric-label">Route</span>
+						<Badge className="metric-value metric-pill" variant="outline">{demo.sessionState.threadRoute?.mode ?? "auto"}</Badge>
+					</div>
 				</CardContent>
 			</Card>
 
