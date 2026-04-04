@@ -1,3 +1,7 @@
+import {
+	createOperatorApprovalsGatewayClient,
+	type GatewayClient,
+} from "openclaw/plugin-sdk/gateway-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 import type {
@@ -7,7 +11,6 @@ import type {
 } from "../../channel-contract/src/index.js";
 import { isApproverAllowed } from "./approval-auth.js";
 import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
-import { ApprovalGatewayClient } from "./approval-client.js";
 
 type AdapterContext = {
 	cfg: OpenClawConfig;
@@ -36,7 +39,8 @@ type AdapterContext = {
 };
 
 export class ApprovalRuntimeAdapter {
-	private approvalClient: ApprovalGatewayClient | null = null;
+	private approvalClient: GatewayClient | null = null;
+	private readyPromise: Promise<void> | null = null;
 
 	constructor(private readonly ctx: AdapterContext) {}
 
@@ -71,10 +75,7 @@ export class ApprovalRuntimeAdapter {
 			return;
 		}
 
-		this.approvalClient ??= new ApprovalGatewayClient({
-			cfg: this.ctx.cfg,
-			log: this.ctx.log,
-		});
+		await this.ensureConnected();
 		await this.ctx.sendProviderStatus({
 			conversationId: envelope.conversationId,
 			kind: "working",
@@ -84,7 +85,10 @@ export class ApprovalRuntimeAdapter {
 			details: { targets },
 		});
 		try {
-			await this.approvalClient.resolveApproval({
+			const method = envelope.action.approvalId.startsWith("plugin:")
+				? "plugin.approval.resolve"
+				: "exec.approval.resolve";
+			await this.approvalClient!.request(method, {
 				id: envelope.action.approvalId,
 				decision: envelope.action.decision,
 			});
@@ -105,7 +109,40 @@ export class ApprovalRuntimeAdapter {
 	}
 
 	close(): void {
-		void this.approvalClient?.close();
+		const client = this.approvalClient;
 		this.approvalClient = null;
+		this.readyPromise = null;
+		void client?.stopAndWait().catch(() => undefined);
+	}
+
+	private async ensureConnected(): Promise<void> {
+		if (this.approvalClient && this.readyPromise) {
+			await this.readyPromise;
+			return;
+		}
+		let resolveReady!: () => void;
+		let rejectReady!: (error: Error) => void;
+		this.readyPromise = new Promise<void>((resolve, reject) => {
+			resolveReady = resolve;
+			rejectReady = reject;
+		});
+		const client = await createOperatorApprovalsGatewayClient({
+			config: this.ctx.cfg,
+			clientDisplayName: "CF DO Channel Plugin",
+			onHelloOk: () => resolveReady(),
+			onConnectError: (error: Error) => {
+				this.ctx.log?.error?.(`cf-do-channel approvals: gateway connect failed: ${String(error)}`);
+				rejectReady(error instanceof Error ? error : new Error(String(error)));
+			},
+			onClose: (code: number, reason: string) => {
+				this.ctx.log?.warn?.(
+					`cf-do-channel approvals: gateway closed (${code}): ${reason || "unknown"}`,
+				);
+				rejectReady(new Error(`gateway closed before ready (${code}): ${reason}`));
+			},
+		});
+		this.approvalClient = client;
+		client.start();
+		await this.readyPromise;
 	}
 }
