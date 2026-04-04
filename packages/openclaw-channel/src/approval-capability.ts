@@ -76,6 +76,12 @@ export function createApprovalCapability(deps: ApprovalCapabilityDeps) {
 			buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
 				void nowMs;
 				const text = deps.buildExecApprovalPendingText(request);
+				const ui = deps.buildApprovalUi({
+					title: "Exec Approval Required",
+					body: text,
+					approvalId: request.id,
+					approvalKind: "exec",
+				});
 				return {
 					text,
 					channelData: {
@@ -87,36 +93,34 @@ export function createApprovalCapability(deps: ApprovalCapabilityDeps) {
 							allowedDecisions: ["allow-once", "allow-always", "deny"],
 						},
 						cfDoChannel: {
-							ui: deps.buildApprovalUi({
-								title: "Exec Approval Required",
-								body: text,
-								approvalId: request.id,
-								approvalKind: "exec",
-							}),
+							ui,
 						},
 					},
 				};
 			},
-			buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
-				text: deps.buildExecApprovalResolvedText(resolved),
-				channelData: {
-					execApproval: {
-						approvalId: resolved.id,
-						approvalSlug: String(resolved.id ?? "").slice(0, 8),
-						approvalKind: "exec",
-						status: "resolved",
-						allowedDecisions: [],
-					},
-					cfDoChannel: {
-						ui: {
-							kind: "notice",
-							title: "Approval Resolved",
-							body: deps.buildExecApprovalResolvedText(resolved),
-							badge: resolved.decision,
+			buildResolvedPayload: ({ resolved }: { resolved: any }) => {
+				const text = deps.buildExecApprovalResolvedText(resolved);
+				return {
+					text,
+					channelData: {
+						execApproval: {
+							approvalId: resolved.id,
+							approvalSlug: String(resolved.id ?? "").slice(0, 8),
+							approvalKind: "exec",
+							status: "resolved",
+							allowedDecisions: [],
+						},
+						cfDoChannel: {
+							ui: {
+								kind: "notice",
+								title: "Approval Resolved",
+								body: text,
+								badge: resolved.decision,
+							},
 						},
 					},
-				},
-			}),
+				};
+			},
 		},
 	};
 
