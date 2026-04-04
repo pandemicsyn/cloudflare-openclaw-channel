@@ -6,11 +6,13 @@ import type {
 	ProviderActionEvent,
 } from "../../channel-contract/src/index.js";
 import { isApproverAllowed } from "./approval-auth.js";
+import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
 import { ApprovalGatewayClient } from "./approval-client.js";
 
 type AdapterContext = {
 	cfg: OpenClawConfig;
 	approvalAllowFrom: string[];
+	defaultConversationId?: string;
 	log?: {
 		info?: (message: string) => void;
 		warn?: (message: string) => void;
@@ -42,6 +44,18 @@ export class ApprovalRuntimeAdapter {
 		if (envelope.action.type !== "approval.resolve") {
 			return;
 		}
+		const targets = {
+			origin: resolveOriginApprovalTarget({
+				conversationId: envelope.conversationId,
+				senderId: envelope.senderId,
+				approvalAllowFrom: this.ctx.approvalAllowFrom,
+			}),
+			approvers: resolveApproverApprovalTargets({
+				conversationId: envelope.conversationId,
+				senderId: envelope.senderId,
+				approvalAllowFrom: this.ctx.approvalAllowFrom,
+			}),
+		};
 		if (!isApproverAllowed(envelope.senderId, this.ctx.approvalAllowFrom)) {
 			await this.ctx.sendProviderMessage({
 				conversationId: envelope.conversationId,
@@ -67,6 +81,7 @@ export class ApprovalRuntimeAdapter {
 			referenceId: envelope.actionId,
 			approvalId: envelope.action.approvalId,
 			message: "Submitting approval decision to OpenClaw.",
+			details: { targets },
 		});
 		try {
 			await this.approvalClient.resolveApproval({

@@ -420,6 +420,7 @@ export class BridgeConnectionManager {
 			this.approvalRuntime ??= new ApprovalRuntimeAdapter({
 				cfg: this.ctx.cfg,
 				approvalAllowFrom: this.ctx.account.approvalAllowFrom,
+				defaultConversationId: envelope.conversationId,
 				log: this.ctx.log,
 				sendProviderMessage: (params) => this.sendProviderMessage(params),
 				sendProviderStatus: (params) => this.sendProviderStatus(params),
