@@ -23,6 +23,7 @@ import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-
 import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { ApprovalGatewayClient } from "./approval-client.js";
+import { isApproverAllowed } from "./approval-auth.js";
 import { recordSenderBinding } from "./binding-store.js";
 import {
 	configureConversationThreadRoute,
@@ -65,9 +66,6 @@ function normalizeBaseWsUrl(baseUrl: string): URL {
 	return url;
 }
 
-function isAllowedSender(candidate: string, allowFrom: string[]): boolean {
-	return allowFrom.includes("*") || allowFrom.includes(candidate);
-}
 
 function buildPairingUi(params: { senderId: string; code?: string }): ChannelUi {
 	return {
@@ -419,7 +417,7 @@ export class BridgeConnectionManager {
 
 	private async handleAction(envelope: ProviderActionEvent): Promise<void> {
 		if (envelope.action.type === "approval.resolve") {
-			if (!isAllowedSender(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
+			if (!isApproverAllowed(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
 				await this.sendProviderMessage({
 					conversationId: envelope.conversationId,
 					text: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
@@ -603,7 +601,7 @@ export class BridgeConnectionManager {
 			senderId,
 			rawBody: text,
 			isSenderAllowed: (candidate: string, allowFrom: string[]) =>
-				isAllowedSender(candidate, allowFrom),
+				isApproverAllowed(candidate, allowFrom),
 			runtime: {
 				shouldComputeCommandAuthorized:
 					this.ctx.channelRuntime.commands.shouldComputeCommandAuthorized,

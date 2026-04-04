@@ -17,6 +17,9 @@ import {
 	getBridgeManager,
 	registerBridgeManager,
 } from "./bridge-manager.js";
+import { createApprovalCapability } from "./approval-capability.js";
+import { resolveApprovalAllowFrom } from "./approval-auth.js";
+import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
 import { readSenderBinding } from "./binding-store.js";
 import { clearThreadBindingAdapter, ensureThreadBindingAdapter } from "./thread-bindings.js";
 
@@ -329,7 +332,7 @@ async function sendOutboundMessage(account: ResolvedAccount, to: string, request
 }
 
 function buildExecApprovalResolvedText(resolved: {
-	decision: string;
+	decision?: string;
 	resolvedBy?: string;
 }): string {
 	const action =
@@ -396,78 +399,26 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 				hint: "<conversation-id>",
 			},
 		},
-		execApprovals: {
-			getInitiatingSurfaceState: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
-				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-				return account.approvalAllowFrom.length > 0 ? { kind: "enabled" } : { kind: "disabled" };
-			},
-			shouldSuppressLocalPrompt: ({
-				cfg,
-				accountId,
-				payload,
-			}: {
-				cfg: OpenClawConfig;
-				accountId?: string | null;
-				payload: { channelData?: unknown };
-			}) => {
-				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-				if (account.approvalAllowFrom.length === 0) {
-					return false;
-				}
-				return getExecApprovalReplyMetadataCompat(payload) !== null;
-			},
-			hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) => {
-				const section = resolveSection(cfg);
-				if (!readString(section, "baseUrl") || !readString(section, "serviceToken")) {
-					return false;
-				}
-				return readStringList(section, "approvalAllowFrom").length > 0;
-			},
-			buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
-				void nowMs;
-				const text = buildExecApprovalPendingText(request);
+		approvals: createApprovalCapability({
+			resolveApprovalTargets: ({ conversationId, senderId, cfg }) => {
+				const allowFrom = resolveApprovalAllowFrom(cfg, (source) =>
+					readStringList(resolveSection(source), "approvalAllowFrom"),
+				);
 				return {
-					text,
-					channelData: {
-						execApproval: {
-							approvalId: request.id,
-							approvalSlug: request.id.slice(0, 8),
-							approvalKind: "exec",
-							status: "required",
-							allowedDecisions: ["allow-once", "allow-always", "deny"],
-						},
-						cfDoChannel: {
-							ui: buildApprovalUi({
-								title: "Exec Approval Required",
-								body: text,
-								approvalId: request.id,
-								approvalKind: "exec",
-							}),
-						},
-					},
+					origin: resolveOriginApprovalTarget({ conversationId, senderId, approvalAllowFrom: allowFrom }),
+					approvers: resolveApproverApprovalTargets({
+						conversationId,
+						senderId,
+						approvalAllowFrom: allowFrom,
+					}),
 				};
 			},
-			buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
-				text: buildExecApprovalResolvedText(resolved),
-				channelData: {
-					execApproval: {
-						approvalId: resolved.id,
-						approvalSlug: String(resolved.id ?? "").slice(0, 8),
-						approvalKind: "exec",
-						status: "resolved",
-						allowedDecisions: [],
-					},
-					cfDoChannel: {
-						ui: {
-							kind: "notice",
-							title: "Approval Resolved",
-							body: buildExecApprovalResolvedText(resolved),
-							badge: resolved.decision,
-						},
-					},
-				},
-			}),
-		},
+			resolveApprovalAllowFrom: (cfg) =>
+				resolveApprovalAllowFrom(cfg, (source) => readStringList(resolveSection(source), "approvalAllowFrom")),
+			buildExecApprovalPendingText,
+			buildExecApprovalResolvedText,
+			buildApprovalUi,
+		}),
 		status: {
 			buildAccountSnapshot: ({ account }: { account: ResolvedAccount }) => ({
 				accountId: account.accountId ?? DEFAULT_ACCOUNT_ID,
