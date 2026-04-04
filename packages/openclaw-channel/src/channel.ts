@@ -18,7 +18,11 @@ import {
 	registerBridgeManager,
 } from "./bridge-manager.js";
 import { createApprovalCapability } from "./approval-capability.js";
-import { resolveApprovalAllowFrom } from "./approval-auth.js";
+import {
+	createApprovalAuthorizeActorAction,
+	isApproverAllowed,
+	resolveApprovalAllowFrom,
+} from "./approval-auth.js";
 import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
 import { readSenderBinding } from "./binding-store.js";
 import { clearThreadBindingAdapter, ensureThreadBindingAdapter } from "./thread-bindings.js";
@@ -400,6 +404,23 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 			},
 		},
 		approvals: createApprovalCapability({
+			channel: DEFAULT_CHANNEL_ID,
+			channelLabel: "Cloudflare Durable Object Channel",
+			listAccountIds: () => [DEFAULT_ACCOUNT_ID],
+			isExecAuthorizedSender: ({ cfg, senderId }) => {
+				if (!senderId) {
+					return false;
+				}
+				const allowFrom = resolveApprovalAllowFrom(cfg, (source) =>
+					readStringList(resolveSection(source), "approvalAllowFrom"),
+				);
+				return isApproverAllowed(senderId, allowFrom);
+			},
+			authorizeActorAction: createApprovalAuthorizeActorAction({
+				channelLabel: "Cloudflare Durable Object Channel",
+				readAllowFrom: (source) => readStringList(resolveSection(source), "approvalAllowFrom"),
+				resolveDefaultTo: (source) => readString(resolveSection(source), "defaultTo"),
+			}),
 			resolveApprovalTargets: ({ conversationId, senderId, cfg }) => {
 				const allowFrom = resolveApprovalAllowFrom(cfg, (source) =>
 					readStringList(resolveSection(source), "approvalAllowFrom"),
