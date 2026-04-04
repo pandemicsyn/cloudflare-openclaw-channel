@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isApproverAllowed, resolveApprovalAllowFrom } from "./approval-auth";
 import {
 	resolveApproverApprovalTargets,
+	resolveApprovalNativeDeliveryMode,
 	resolveOriginApprovalTarget,
 } from "./approval-targets";
 
@@ -16,6 +17,14 @@ describe("approval auth seams", () => {
 		expect(isApproverAllowed("user_1", ["*"])).toBe(true);
 		expect(isApproverAllowed("user_1", ["user_1"])).toBe(true);
 		expect(isApproverAllowed("user_2", ["user_1"])).toBe(false);
+	});
+
+	it("resolves default+configured approver IDs with trimming and wildcard filtering", () => {
+		const allowFrom = resolveApprovalAllowFrom({} as any, () => [" user_999 ", "*", ""]);
+		expect(allowFrom).toEqual([" user_999 ", "*", ""]);
+		expect(isApproverAllowed("user_999", ["user_999"])).toBe(true);
+		expect(isApproverAllowed("intruder", ["user_999"])).toBe(false);
+		expect(isApproverAllowed("whoever", ["*"])).toBe(true);
 	});
 });
 
@@ -48,5 +57,11 @@ describe("approval target seams", () => {
 				approvalAllowFrom: [],
 			}),
 		).toEqual([{ kind: "approver-dm", conversationId: "demo-room", to: "user_123" }]);
+	});
+
+	it("resolves native delivery mode from channel policy", () => {
+		expect(resolveApprovalNativeDeliveryMode({})).toBe("dm");
+		expect(resolveApprovalNativeDeliveryMode({ dmPolicy: "channel" })).toBe("channel");
+		expect(resolveApprovalNativeDeliveryMode({ dmPolicy: "both" })).toBe("both");
 	});
 });

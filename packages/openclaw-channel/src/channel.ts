@@ -23,7 +23,11 @@ import {
 	isApproverAllowed,
 	resolveApprovalAllowFrom,
 } from "./approval-auth.js";
-import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
+import {
+	resolveApproverApprovalTargets,
+	resolveApprovalNativeDeliveryMode,
+	resolveOriginApprovalTarget,
+} from "./approval-targets.js";
 import { readSenderBinding } from "./binding-store.js";
 import { clearThreadBindingAdapter, ensureThreadBindingAdapter } from "./thread-bindings.js";
 
@@ -434,6 +438,10 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 					}),
 				};
 			},
+			resolveNativeDeliveryMode: ({ cfg }) =>
+				resolveApprovalNativeDeliveryMode({
+					dmPolicy: readString(resolveSection(cfg), "dmPolicy"),
+				}),
 			resolveApprovalAllowFrom: (cfg) =>
 				resolveApprovalAllowFrom(cfg, (source) => readStringList(resolveSection(source), "approvalAllowFrom")),
 			buildExecApprovalPendingText,
@@ -480,6 +488,11 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 							...next,
 						}),
 					channelRuntime: ctx.channelRuntime,
+					authorizeApprovalActorAction: createApprovalAuthorizeActorAction({
+						channelLabel: "Cloudflare Durable Object Channel",
+						readAllowFrom: (source) => readStringList(resolveSection(source), "approvalAllowFrom"),
+						resolveDefaultTo: (source) => readString(resolveSection(source), "defaultTo"),
+					}),
 				});
 				await manager.run();
 			},

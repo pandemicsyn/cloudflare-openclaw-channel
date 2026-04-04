@@ -4,6 +4,12 @@ type ApprovalTargetInput = {
 	approvalAllowFrom: string[];
 };
 
+type ApprovalDeliveryModeInput = {
+	dmPolicy?: string;
+};
+
+export type CfApprovalNativeDeliveryMode = "dm" | "channel" | "both";
+
 export type CfApprovalTarget = {
 	kind: "origin" | "approver-dm";
 	conversationId: string;
@@ -41,4 +47,17 @@ export function resolveApproverApprovalTargets(input: ApprovalTargetInput): CfAp
 	}
 
 	return [];
+}
+
+export function resolveApprovalNativeDeliveryMode(
+	input: ApprovalDeliveryModeInput,
+): CfApprovalNativeDeliveryMode {
+	const mode = input.dmPolicy?.trim().toLowerCase();
+	if (mode === "channel" || mode === "origin-only") {
+		return "channel";
+	}
+	if (mode === "both") {
+		return "both";
+	}
+	return "dm";
 }

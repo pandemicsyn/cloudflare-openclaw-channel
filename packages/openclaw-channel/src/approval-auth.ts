@@ -2,6 +2,16 @@ import { createRequire } from "node:module";
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
+export type ApprovalActorActionParams = {
+	cfg: OpenClawConfig;
+	accountId?: string | null;
+	senderId?: string | null;
+	action: "approve";
+	approvalKind: "exec" | "plugin";
+};
+
+export type ApprovalActorActionResult = { authorized: boolean; reason?: string };
+
 export function resolveApprovalAllowFrom(
 	cfg: OpenClawConfig,
 	read: (cfg: OpenClawConfig) => string[],
@@ -66,7 +76,7 @@ export function createApprovalAuthorizeActorAction(params: {
 			}),
 		normalizeSenderId: (value) => value.trim() || undefined,
 	});
-	return adapter.authorizeActorAction;
+	return adapter.authorizeActorAction as (params: ApprovalActorActionParams) => ApprovalActorActionResult;
 }
 
 export function isApproverAllowed(senderId: string, allowFrom: string[]): boolean {
