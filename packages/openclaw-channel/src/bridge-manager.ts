@@ -23,6 +23,7 @@ import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-
 import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { ApprovalRuntimeAdapter } from "./approval-runtime-adapter.js";
+import type { ApprovalActorActionParams, ApprovalActorActionResult } from "./approval-auth.js";
 import { isApproverAllowed } from "./approval-auth.js";
 import { recordSenderBinding } from "./binding-store.js";
 import {
@@ -52,6 +53,7 @@ type GatewayContext = {
 	};
 	setStatus?: (next: Record<string, unknown>) => void;
 	channelRuntime?: any;
+	authorizeApprovalActorAction?: (params: ApprovalActorActionParams) => ApprovalActorActionResult;
 };
 
 const activeManagers = new Map<string, BridgeConnectionManager>();
@@ -422,6 +424,9 @@ export class BridgeConnectionManager {
 				approvalAllowFrom: this.ctx.account.approvalAllowFrom,
 				defaultConversationId: envelope.conversationId,
 				log: this.ctx.log,
+				authorizeActorAction:
+					this.ctx.authorizeApprovalActorAction ??
+					(() => ({ authorized: false, reason: "Approval authorization is unavailable." })),
 				sendProviderMessage: (params) => this.sendProviderMessage(params),
 				sendProviderStatus: (params) => this.sendProviderStatus(params),
 			});

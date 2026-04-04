@@ -6,6 +6,7 @@ import type {
 	ApprovalDecision,
 	ChannelUi,
 } from "../../channel-contract/src/index.js";
+import type { CfApprovalNativeDeliveryMode } from "./approval-targets.js";
 
 type ApprovalCapabilityDeps = {
 	channel: string;
@@ -32,6 +33,10 @@ type ApprovalCapabilityDeps = {
 		origin: unknown;
 		approvers: unknown[];
 	};
+	resolveNativeDeliveryMode?: (params: {
+		cfg: OpenClawConfig;
+		accountId?: string | null;
+	}) => CfApprovalNativeDeliveryMode;
 	buildExecApprovalPendingText: (request: Record<string, unknown>) => string;
 	buildExecApprovalResolvedText: (resolved: { decision?: string; resolvedBy?: string }) => string;
 	buildApprovalUi: (params: {
@@ -67,8 +72,50 @@ export function createApprovalCapability(deps: ApprovalCapabilityDeps) {
 			accountId?: string | null;
 			senderId?: string | null;
 		}) => deps.isExecAuthorizedSender({ cfg, accountId, senderId }),
-		isNativeDeliveryEnabled: () => false,
-		resolveNativeDeliveryMode: () => "channel",
+		isNativeDeliveryEnabled: () => Boolean(deps.resolveApprovalTargets),
+		resolveNativeDeliveryMode: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) =>
+			deps.resolveNativeDeliveryMode?.({ cfg, accountId }) ?? "dm",
+		resolveOriginTarget: ({ cfg, request }: { cfg: OpenClawConfig; request: any }) => {
+			const conversationId = request?.request?.turnSourceTo?.trim();
+			if (!conversationId || !deps.resolveApprovalTargets) {
+				return null;
+			}
+			const targets = deps.resolveApprovalTargets({
+				conversationId,
+				senderId: undefined,
+				cfg,
+			});
+			const origin =
+				targets.origin &&
+				typeof targets.origin === "object" &&
+				"conversationId" in (targets.origin as Record<string, unknown>)
+					? (targets.origin as { conversationId?: unknown })
+					: null;
+			return typeof origin?.conversationId === "string" ? { to: origin.conversationId } : null;
+		},
+		resolveApproverDmTargets: ({ cfg, request }: { cfg: OpenClawConfig; request: any }) => {
+			const conversationId = request?.request?.turnSourceTo?.trim();
+			if (!conversationId || !deps.resolveApprovalTargets) {
+				return [];
+			}
+			const targets = deps.resolveApprovalTargets({
+				conversationId,
+				senderId: undefined,
+				cfg,
+			});
+			return Array.isArray(targets.approvers)
+				? targets.approvers
+						.map((entry) => {
+							if (!entry || typeof entry !== "object") {
+								return null;
+							}
+							const target = entry as { to?: unknown };
+							return typeof target.to === "string" ? { to: target.to } : null;
+						})
+						.filter((entry): entry is { to: string } => Boolean(entry))
+				: [];
+		},
+		notifyOriginWhenDmOnly: true,
 	});
 
 	const compatibilityRender = {
@@ -127,20 +174,7 @@ export function createApprovalCapability(deps: ApprovalCapabilityDeps) {
 	return createChannelApprovalCapability({
 		authorizeActorAction: deps.authorizeActorAction as any,
 		approvals: {
-			delivery: {
-				hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) =>
-					deps.resolveApprovalAllowFrom(cfg).length > 0,
-				shouldSuppressForwardingFallback: ({ cfg, request }: { cfg: OpenClawConfig; target: any; request: any }) => {
-					if (deps.resolveApprovalTargets) {
-						void deps.resolveApprovalTargets({
-							conversationId: request?.conversationId ?? "unknown",
-							senderId: request?.requestedBy,
-							cfg,
-						});
-					}
-					return false;
-				},
-			},
+			delivery: native.delivery,
 			render: compatibilityRender as any,
 			native: native.native,
 		},

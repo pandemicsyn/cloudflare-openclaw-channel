@@ -9,12 +9,13 @@ import type {
 	ChannelUi,
 	ProviderActionEvent,
 } from "../../channel-contract/src/index.js";
-import { isApproverAllowed } from "./approval-auth.js";
+import type { ApprovalActorActionParams, ApprovalActorActionResult } from "./approval-auth.js";
 import { resolveApproverApprovalTargets, resolveOriginApprovalTarget } from "./approval-targets.js";
 
 type AdapterContext = {
 	cfg: OpenClawConfig;
 	approvalAllowFrom: string[];
+	authorizeActorAction: (params: ApprovalActorActionParams) => ApprovalActorActionResult;
 	defaultConversationId?: string;
 	log?: {
 		info?: (message: string) => void;
@@ -48,6 +49,7 @@ export class ApprovalRuntimeAdapter {
 		if (envelope.action.type !== "approval.resolve") {
 			return;
 		}
+		const approvalKind = envelope.action.approvalId.startsWith("plugin:") ? "plugin" : "exec";
 		const targets = {
 			origin: resolveOriginApprovalTarget({
 				conversationId: envelope.conversationId,
@@ -60,15 +62,25 @@ export class ApprovalRuntimeAdapter {
 				approvalAllowFrom: this.ctx.approvalAllowFrom,
 			}),
 		};
-		if (!isApproverAllowed(envelope.senderId, this.ctx.approvalAllowFrom)) {
+		const authorization = this.ctx.authorizeActorAction({
+			cfg: this.ctx.cfg,
+			senderId: envelope.senderId,
+			action: "approve",
+			approvalKind,
+		});
+		if (!authorization.authorized) {
 			await this.ctx.sendProviderMessage({
 				conversationId: envelope.conversationId,
-				text: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
+				text:
+					authorization.reason ??
+					`Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
 				role: "system",
 				ui: {
 					kind: "notice",
 					title: "Approval Not Authorized",
-					body: `${envelope.senderId} is not allowed to approve actions on this channel.`,
+					body:
+						authorization.reason ??
+						`${envelope.senderId} is not allowed to approve actions on this channel.`,
 					badge: "denied",
 				},
 			});
@@ -85,9 +97,8 @@ export class ApprovalRuntimeAdapter {
 			details: { targets },
 		});
 		try {
-			const method = envelope.action.approvalId.startsWith("plugin:")
-				? "plugin.approval.resolve"
-				: "exec.approval.resolve";
+			const method =
+				approvalKind === "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve";
 			await this.approvalClient!.request(method, {
 				id: envelope.action.approvalId,
 				decision: envelope.action.decision,
