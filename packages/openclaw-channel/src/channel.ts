@@ -396,77 +396,65 @@ export const cloudflareDoChannelPlugin = createChatChannelPlugin<ResolvedAccount
 				hint: "<conversation-id>",
 			},
 		},
-		execApprovals: {
-			getInitiatingSurfaceState: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) => {
-				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-				return account.approvalAllowFrom.length > 0 ? { kind: "enabled" } : { kind: "disabled" };
-			},
-			shouldSuppressLocalPrompt: ({
-				cfg,
-				accountId,
-				payload,
-			}: {
-				cfg: OpenClawConfig;
-				accountId?: string | null;
-				payload: { channelData?: unknown };
-			}) => {
-				const account = resolveAccount(cfg, accountId ?? DEFAULT_ACCOUNT_ID);
-				if (account.approvalAllowFrom.length === 0) {
-					return false;
-				}
-				return getExecApprovalReplyMetadataCompat(payload) !== null;
-			},
-			hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) => {
-				const section = resolveSection(cfg);
-				if (!readString(section, "baseUrl") || !readString(section, "serviceToken")) {
-					return false;
-				}
-				return readStringList(section, "approvalAllowFrom").length > 0;
-			},
-			buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
-				void nowMs;
-				const text = buildExecApprovalPendingText(request);
-				return {
-					text,
-					channelData: {
-						execApproval: {
-							approvalId: request.id,
-							approvalSlug: request.id.slice(0, 8),
-							approvalKind: "exec",
-							status: "required",
-							allowedDecisions: ["allow-once", "allow-always", "deny"],
-						},
-						cfDoChannel: {
-							ui: buildApprovalUi({
-								title: "Exec Approval Required",
-								body: text,
-								approvalId: request.id,
-								approvalKind: "exec",
-							}),
-						},
-					},
-				};
-			},
-			buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
-				text: buildExecApprovalResolvedText(resolved),
-				channelData: {
-					execApproval: {
-						approvalId: resolved.id,
-						approvalSlug: String(resolved.id ?? "").slice(0, 8),
-						approvalKind: "exec",
-						status: "resolved",
-						allowedDecisions: [],
-					},
-					cfDoChannel: {
-						ui: {
-							kind: "notice",
-							title: "Approval Resolved",
-							body: buildExecApprovalResolvedText(resolved),
-							badge: resolved.decision,
-						},
-					},
+		approvals: {
+			delivery: {
+				hasConfiguredDmRoute: ({ cfg }: { cfg: OpenClawConfig }) => {
+					const section = resolveSection(cfg);
+					if (!readString(section, "baseUrl") || !readString(section, "serviceToken")) {
+						return false;
+					}
+					return readStringList(section, "approvalAllowFrom").length > 0;
 				},
-			}),
+				shouldSuppressForwardingFallback: () => false,
+			},
+			render: {
+				exec: {
+					buildPendingPayload: ({ request, nowMs }: { request: any; nowMs: number }) => {
+						void nowMs;
+						const text = buildExecApprovalPendingText(request);
+						return {
+							text,
+							channelData: {
+								execApproval: {
+									approvalId: request.id,
+									approvalSlug: request.id.slice(0, 8),
+									approvalKind: "exec",
+									status: "required",
+									allowedDecisions: ["allow-once", "allow-always", "deny"],
+								},
+								cfDoChannel: {
+									ui: buildApprovalUi({
+										title: "Exec Approval Required",
+										body: text,
+										approvalId: request.id,
+										approvalKind: "exec",
+									}),
+								},
+							},
+						};
+					},
+					buildResolvedPayload: ({ resolved }: { resolved: any }) => ({
+						text: buildExecApprovalResolvedText(resolved),
+						channelData: {
+							execApproval: {
+								approvalId: resolved.id,
+								approvalSlug: String(resolved.id ?? "").slice(0, 8),
+								approvalKind: "exec",
+								status: "resolved",
+								allowedDecisions: [],
+							},
+							cfDoChannel: {
+								ui: {
+									kind: "notice",
+									title: "Approval Resolved",
+									body: buildExecApprovalResolvedText(resolved),
+									badge: resolved.decision,
+								},
+							},
+						},
+					}),
+				},
+			},
 		},
 		status: {
 			buildAccountSnapshot: ({ account }: { account: ResolvedAccount }) => ({
