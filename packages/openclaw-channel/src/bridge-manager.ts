@@ -22,7 +22,7 @@ import { createChannelPairingChallengeIssuer } from "openclaw/plugin-sdk/channel
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveInboundDirectDmAccessWithRuntime } from "openclaw/plugin-sdk/command-auth";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { ApprovalGatewayClient } from "./approval-client.js";
+import { ApprovalRuntimeAdapter } from "./approval-runtime-adapter.js";
 import { isApproverAllowed } from "./approval-auth.js";
 import { recordSenderBinding } from "./binding-store.js";
 import {
@@ -196,7 +196,7 @@ export class BridgeConnectionManager {
 	private connected = false;
 	private stopped = false;
 	private reconnectDelayMs = 1_000;
-	private approvalClient: ApprovalGatewayClient | null = null;
+	private approvalRuntime: ApprovalRuntimeAdapter | null = null;
 
 	constructor(private readonly ctx: GatewayContext) {}
 
@@ -240,8 +240,8 @@ export class BridgeConnectionManager {
 			} catch {}
 		}
 		this.socket = null;
-		void this.approvalClient?.close();
-		this.approvalClient = null;
+		this.approvalRuntime?.close();
+		this.approvalRuntime = null;
 	}
 
 	async sendProviderMessage(params: {
@@ -417,50 +417,14 @@ export class BridgeConnectionManager {
 
 	private async handleAction(envelope: ProviderActionEvent): Promise<void> {
 		if (envelope.action.type === "approval.resolve") {
-			if (!isApproverAllowed(envelope.senderId, this.ctx.account.approvalAllowFrom)) {
-				await this.sendProviderMessage({
-					conversationId: envelope.conversationId,
-					text: `Approval denied: ${envelope.senderId} is not allowed to approve actions on this channel.`,
-					role: "system",
-					ui: {
-						kind: "notice",
-						title: "Approval Not Authorized",
-						body: `${envelope.senderId} is not allowed to approve actions on this channel.`,
-						badge: "denied",
-					},
-				});
-				return;
-			}
-			this.approvalClient ??= new ApprovalGatewayClient({
+			this.approvalRuntime ??= new ApprovalRuntimeAdapter({
 				cfg: this.ctx.cfg,
+				approvalAllowFrom: this.ctx.account.approvalAllowFrom,
 				log: this.ctx.log,
+				sendProviderMessage: (params) => this.sendProviderMessage(params),
+				sendProviderStatus: (params) => this.sendProviderStatus(params),
 			});
-			await this.sendProviderStatus({
-				conversationId: envelope.conversationId,
-				kind: "working",
-				referenceId: envelope.actionId,
-				approvalId: envelope.action.approvalId,
-				message: "Submitting approval decision to OpenClaw.",
-			});
-			try {
-				await this.approvalClient.resolveApproval({
-					id: envelope.action.approvalId,
-					decision: envelope.action.decision,
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				await this.sendProviderMessage({
-					conversationId: envelope.conversationId,
-					text: `Approval submit failed: ${message}`,
-					role: "system",
-					ui: {
-						kind: "notice",
-						title: "Approval Submit Failed",
-						body: message,
-						badge: "error",
-					},
-				});
-			}
+			await this.approvalRuntime.handleApprovalResolve(envelope);
 			return;
 		}
 
