@@ -757,7 +757,11 @@ export class ChannelSession {
 							updatedAt: message.timestamp,
 						})
 					: this.state.approvals;
-				const approvalFromMetadata = deriveApprovalStateFromMessageMetadata(message);
+				// Legacy metadata-based approval parsing is projection-only compatibility.
+				// If a structured approval UI payload is present, treat that as canonical
+				// and do not let metadata overwrite its decisions/body/title.
+				const approvalFromMetadata =
+					message.ui?.kind === "approval" ? undefined : deriveApprovalStateFromMessageMetadata(message);
 				const approvalFromMessage = approvalFromMetadata
 					? upsertApproval(approvalFromMessageUi, approvalFromMetadata)
 					: approvalFromMessageUi;

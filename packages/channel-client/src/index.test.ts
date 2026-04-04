@@ -323,6 +323,57 @@ describe("channel-client", () => {
 		});
 	});
 
+	it("does not let metadata override approval ui restrictions", async () => {
+		const holder: { socket?: FakeWebSocket } = {};
+		const client = createChannelClient({
+			baseUrl: "https://example.test",
+			conversationId: "demo-room",
+			auth: {
+				kind: "jwt",
+				token: "jwt-123",
+			},
+			webSocketFactory: (url) => {
+				holder.socket = new FakeWebSocket(url);
+				queueMicrotask(() => holder.socket?.open());
+				return holder.socket as unknown as WebSocket;
+			},
+		});
+		const session = createChannelSession(client);
+
+		await session.connect();
+		holder.socket?.receive({
+			type: "server.message",
+			conversationId: "demo-room",
+			message: {
+				id: "approval_msg_mixed",
+				role: "system",
+				text: "Approval required.",
+				timestamp: new Date().toISOString(),
+				ui: {
+					kind: "approval",
+					title: "Restricted Approval",
+					body: "Only allow-once is valid.",
+					approvalId: "plugin:restricted",
+					approvalKind: "plugin",
+					allowedDecisions: ["allow-once"],
+				},
+				metadata: {
+					execApproval: {
+						approvalId: "plugin:restricted",
+						allowedDecisions: ["allow-once", "allow-always", "deny"],
+					},
+				},
+			},
+		});
+
+		expect(session.snapshot.approvals).toEqual([
+			expect.objectContaining({
+				approvalId: "plugin:restricted",
+				allowedDecisions: ["allow-once"],
+			}),
+		]);
+	});
+
 	it("derives approval state from structured metadata when ui is omitted", async () => {
 		const holder: { socket?: FakeWebSocket } = {};
 		const client = createChannelClient({
